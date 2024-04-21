@@ -1,0 +1,28 @@
+{
+  "productName": "mi-home-toolkit",
+  "version": "0.0.0",
+  "identifier": "com.tauri.dev",
+  "build": {
+    "beforeDevCommand": "pnpm start",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist/mi-home-toolkit/browser"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "mi-home-toolkit",
+        "width": 800,
+        "height": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.icns", "icons/icon.ico"]
+  }
+}
