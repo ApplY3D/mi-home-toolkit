@@ -1,24 +1,26 @@
-import { Component } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { RouterOutlet } from '@angular/router';
-import { invoke } from "@tauri-apps/api/core";
+import { Component, inject } from '@angular/core'
+import { RouterModule } from '@angular/router'
+import { ConfigService } from './config.service'
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, RouterOutlet],
+  styles: `
+    :host {
+      display: block;
+    }
+  `,
+  imports: [RouterModule],
   templateUrl: './app.component.html',
-  styleUrl: './app.component.css'
 })
 export class AppComponent {
-  greetingMessage = "";
+  configService = inject(ConfigService)
 
-  greet(event: SubmitEvent, name: string): void {
-    event.preventDefault();
-
-    // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
-    invoke<string>("greet", { name }).then((text) => {
-      this.greetingMessage = text;
-    });
+  constructor() {
+    this.configService.systemTheme$.subscribe((systemTheme) => {
+      document
+        .getElementsByTagName('html')[0]
+        .setAttribute('data-theme', systemTheme)
+    })
   }
 }
