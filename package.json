@@ -20,6 +20,7 @@
     "@angular/router": "^17.0.0",
     "@tauri-apps/api": ">=2.0.0-beta.0",
     "@tauri-apps/plugin-http": "2.0.0-beta.2",
+    "@tauri-apps/plugin-log": "2.0.0-beta.3",
     "@tauri-apps/plugin-shell": ">=2.0.0-beta.0",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0",

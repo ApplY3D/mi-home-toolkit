@@ -15,6 +15,7 @@
     "menu:default",
     "tray:default",
     "shell:allow-open",
-    "http:default"
+    "http:default",
+    "log:default"
   ]
 }
