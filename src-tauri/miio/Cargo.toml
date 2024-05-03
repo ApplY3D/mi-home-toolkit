@@ -1,0 +1,20 @@
+[package]
+edition = "2021"
+name = "miio"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.82"
+base64 = "0.22.0"
+crypto-hash = "0.3.4"
+hex = "0.4.3"
+hmac = "0.10.0"
+rand = "0.8.5"
+reqwest = {version = "0.12.4", features = ["blocking", "json"]}
+serde = {version = "1.0.198", features = ["derive"]}
+serde_json = "1.0.116"
+sha2 = "0.9.5"
+tokio = {version = "1.37.0", features = ["macros"]}
+urlencoding = "2.1.3"
