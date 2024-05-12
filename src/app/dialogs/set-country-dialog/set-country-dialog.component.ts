@@ -1,22 +1,14 @@
 import { CommonModule } from '@angular/common'
-import {
-  Component,
-  ElementRef,
-  effect,
-  inject,
-  model,
-  output,
-  viewChild,
-} from '@angular/core'
+import { Component, inject, model, output } from '@angular/core'
 import { injectMutation } from '@tanstack/angular-query-experimental'
 import { countries } from '../../constants'
-import { useDialog } from '../../helpers'
 import { AuthService } from '../../auth.service'
+import { DialogDirective } from '../dialog.directive'
 
 @Component({
   standalone: true,
   selector: 'app-set-country-dialog',
-  template: ` <dialog #setCountryDialogComponent class="modal" [open]="">
+  template: ` <dialog class="modal" app-dialog [visible]="visible()">
     <form
       class="modal-box"
       (submit)="$event.preventDefault(); setCountry(select.value)"
@@ -55,26 +47,18 @@ import { AuthService } from '../../auth.service'
     </form>
   </dialog>`,
   styles: [``],
-  imports: [CommonModule],
+  imports: [CommonModule, DialogDirective],
 })
 export class SetCountryDialogComponent {
   visible = model(false)
   countryChanged = output()
 
   authService = inject(AuthService)
-  dialog = viewChild<ElementRef<HTMLDialogElement>>('setCountryDialogComponent')
-  executeCommandDialog = useDialog(this.dialog)
+
   countryMutation = injectMutation(() => ({
     mutationFn: (country: string) => this.authService.setCountry(country),
     onSuccess: () => (this.visible.set(false), this.countryChanged.emit()),
   }))
-
-  visibleEffect = effect(
-    () => {
-      this.executeCommandDialog.setVisible(this.visible())
-    },
-    { allowSignalWrites: true }
-  )
 
   setCountry(country: string) {
     if (!country || this.countryMutation.isPending()) return
