@@ -45,6 +45,12 @@ async fn get_devices() -> Result<Vec<Device>, ()> {
 }
 
 #[tauri::command]
+async fn get_device(did: String) -> Result<Vec<Device>, ()> {
+    let mut guard = MI_CLOUD_PROTOCOL.lock().await;
+    guard.get_device(&did, None).await.map_err(|_| ())
+}
+
+#[tauri::command]
 async fn call_device(did: String, method: String, params: Option<String>) -> Result<Value, ()> {
     let mut guard = MI_CLOUD_PROTOCOL.lock().await;
     let params = params.map(|params| Value::from_str(params.as_str()).unwrap());
@@ -70,6 +76,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             login,
             set_country,
+            get_device,
             get_devices,
             call_device
         ])

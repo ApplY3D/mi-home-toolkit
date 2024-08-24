@@ -9,6 +9,8 @@ import { map } from 'rxjs'
 import { countryCodeToName } from '../constants'
 import { SetCountryDialogComponent } from '../dialogs/set-country-dialog/set-country-dialog.component'
 import { injectQuery } from '@tanstack/angular-query-experimental'
+import { ExecuteCommandDialogComponent } from '../dialogs/execute-command-dialog/execute-command-dialog.component'
+import { Device } from '../types'
 
 @Component({
   standalone: true,
@@ -22,7 +24,7 @@ import { injectQuery } from '@tanstack/angular-query-experimental'
         @if (devicesQuery.isFetching()) {
           <span class="loading loading-spinner loading-md"> </span>
         } @else {
-          <span><app-icon icon="refresh"></app-icon> </span>
+          <app-icon class="w-6 h-6" icon="refresh" />
         }
       </button>
     </div>
@@ -36,7 +38,7 @@ import { injectQuery } from '@tanstack/angular-query-experimental'
         <app-device
           class="mb-2"
           [device]="device"
-          (executeCommand)="executeCommandDid.set(device.did)"
+          (executeCommand)="executeCommandForDevice.set(device)"
         ></app-device>
       } @empty {
         <div class="text-center text-gray-500">
@@ -58,6 +60,8 @@ import { injectQuery } from '@tanstack/angular-query-experimental'
       [(visible)]="changeCountryDialogVisible"
       (countryChanged)="devicesQuery.refetch()"
     />
+
+    <app-execute-command-dialog [(device)]="executeCommandForDevice" />
   `,
   styles: [``],
   imports: [
@@ -65,10 +69,11 @@ import { injectQuery } from '@tanstack/angular-query-experimental'
     DeviceComponent,
     IconComponent,
     SetCountryDialogComponent,
+    ExecuteCommandDialogComponent,
   ],
 })
 export class DevicesPageComponent {
-  executeCommandDid = signal<number | string | null>(null)
+  executeCommandForDevice = signal<Device | null>(null)
   changeCountryDialogVisible = signal(false)
 
   miService = inject(MiService)

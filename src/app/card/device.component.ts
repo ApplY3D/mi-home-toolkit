@@ -4,6 +4,7 @@ import {
   effect,
   inject,
   input,
+  output,
   signal,
   untracked,
 } from '@angular/core'
@@ -13,12 +14,13 @@ import { deviceToImageMap } from '../constants'
 import { IconComponent } from '../icon/icon.component'
 import { MiService } from '../mi.service'
 import { FormsModule } from '@angular/forms'
+import { injectQuery } from '@tanstack/angular-query-experimental'
 
 @Component({
   standalone: true,
   selector: 'app-device',
   template: `
-    @if (device(); as device) {
+    @if (deviceComputed(); as device) {
       <div class="card min-[550px]:card-side bg-base-100 shadow-xl">
         <figure
           class="flex-shrink-0"
@@ -26,12 +28,37 @@ import { FormsModule } from '@angular/forms'
         >
           <img style="width: 168px;" src="{{ deviceImage() }}" />
           <div class="absolute left-4 top-4 w-6">
-            <app-icon *ngIf="device.isOnline" icon="wifi"></app-icon>
-            <app-icon *ngIf="!device.isOnline" icon="wifi_off"></app-icon>
+            <app-icon *ngIf="device.isOnline" icon="wifi" class="w-5 h-5" />
+            <app-icon
+              *ngIf="!device.isOnline"
+              icon="wifi_off"
+              class="w-6 h-6"
+            />
           </div>
         </figure>
         <div class="card-body">
-          <h2 class="card-title">{{ device.name }}</h2>
+          <h2 class="card-title">
+            {{ device.name }}
+
+            <div class="tooltip self-start" data-tip="Refresh">
+              <button
+                (click)="refreshDevice()"
+                class="btn btn-sm btn-circle btn-outline"
+              >
+                <app-icon class="w-5 h-5" icon="refresh" />
+              </button>
+            </div>
+
+            <div class="tooltip self-start" data-tip="Execute command">
+              <button
+                *ngIf="device.isOnline"
+                (click)="executeCommand.emit()"
+                class="btn btn-sm btn-circle btn-outline"
+              >
+                <app-icon class="w-5 h-5" icon="terminal" />
+              </button>
+            </div>
+          </h2>
           <p>ID: {{ device.did }}</p>
           <p>IP: {{ device.localip }}</p>
           <p>MAC: {{ device.mac }}</p>
@@ -70,18 +97,45 @@ import { FormsModule } from '@angular/forms'
 export class DeviceComponent {
   miService = inject(MiService)
 
+  executeCommand = output()
+
   device = input.required<Device>()
-  deviceImage = computed(() => deviceToImageMap.get(this.device().model))
+  deviceQuery = injectQuery(() => {
+    const device = this.device()
+    return {
+      queryFn: () => this.miService.getDevice(device.did).then((d) => d!),
+      queryKey: ['device', device.did],
+      initialData: device,
+      enabled: false,
+    }
+  })
+  private source = signal<'input' | 'query'>('input')
+  private inputSourceEffect = effect(
+    () => (this.device(), this.source.set('input')),
+    { allowSignalWrites: true }
+  )
+  deviceComputed = computed(() =>
+    this.source() === 'input' ? this.device() : this.deviceQuery.data()
+  )
+  refreshDevice() {
+    this.deviceQuery.refetch().then(() => this.source.set('query'))
+  }
+
+  deviceImage = computed(() =>
+    deviceToImageMap.get(this.deviceComputed().model)
+  )
 
   lanModeUpdate = signal(0)
   lanMode = signal(false)
-  lanModeAvailable = computed(() =>
-    this.device().model.startsWith('yeelink.light')
+  lanModeAvailable = computed(
+    () =>
+      this.deviceComputed().isOnline &&
+      this.deviceComputed().model.startsWith('yeelink.light')
   )
   lanModeLoading = signal(false)
   lanModeEffect = effect(
     () => {
-      const device = untracked(() => this.device())
+      const device = untracked(() => this.deviceComputed())
       const lanModeLoading = untracked(() => this.lanModeLoading())
       const lanModeAvailable = this.lanModeAvailable()
       if (lanModeAvailable && !lanModeLoading) {
@@ -98,7 +152,7 @@ export class DeviceComponent {
     const lanModeLoading = this.lanModeLoading()
     if (lanModeLoading) return
     this.lanModeLoading.set(true)
-    const device = this.device()
+    const device = this.deviceComputed()
     const lanMode = this.lanMode()
     this.miService
       .setProp({

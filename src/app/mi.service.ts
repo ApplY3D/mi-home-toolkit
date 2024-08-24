@@ -18,8 +18,16 @@ export class MiService {
     return invoke<GetDevicesResponse>('get_devices')
   }
 
-  callDevice(data: { did: string; method: string; params?: string }) {
-    const { did, method, params } = data
+  getDevice(did: string) {
+    return invoke<GetDevicesResponse>('get_device', { did }).then((res) =>
+      res.at(0)
+    )
+  }
+
+  callDevice(data: { did: string; method: string; params?: string | null }) {
+    const { did, method } = data
+    let { params } = data
+    if ([null, ''].includes(params as '')) params = undefined
     return invoke('call_device', { did, method, params })
   }
 
