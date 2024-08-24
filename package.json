@@ -1,12 +1,16 @@
 {
   "name": "mi-home-toolkit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "tauri": "tauri"
+  },
+  "engines": {
+    "node": ">=18.19.1",
+    "pnpm": ">=8"
   },
   "private": true,
   "dependencies": {

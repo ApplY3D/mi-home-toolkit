@@ -11,6 +11,7 @@ A versatile tool for managing Mi Home smart devices.
 
 - View device information, such as `token`, `ip`, `did`
 - Enable LAN mode for bulbs
+- Execute device commands
 
 ## Usage
 
@@ -21,6 +22,7 @@ A versatile tool for managing Mi Home smart devices.
 ### 2. Use the app
 
 ![Devices screen](.github/images/devices-screen.png)
+![Execute command](.github/images/execuse-command.png)
 
 ## Download
 
