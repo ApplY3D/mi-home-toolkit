@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common'
-import { Component, effect, inject, signal } from '@angular/core'
+import { Component, computed, effect, inject, signal } from '@angular/core'
 import { IconComponent } from '../icon/icon.component'
 import {
   FormBuilder,
@@ -10,6 +10,7 @@ import {
 import { AuthService } from '../auth.service'
 import { Router } from '@angular/router'
 import { countries } from '../constants'
+import { injectMutation } from '@tanstack/angular-query-experimental'
 
 @Component({
   standalone: true,
@@ -57,6 +58,25 @@ import { countries } from '../constants'
       <span *ngIf="loading()" class="loading loading-spinner loading-xs"></span>
       Login
     </button>
+
+    @if (loginMutation.isError()) {
+      <div class="toast toast-center">
+        <div role="alert" class="alert alert-error">
+          <div></div>
+          <div>
+            <h3 class="font-bold">Login failed</h3>
+            <div class="text-xs">{{ loginMutation.error() }}</div>
+          </div>
+          <button
+            type="button"
+            class="btn btn-sm btn-circle btn-ghost"
+            (click)="loginMutation.reset()"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    }
   </form>`,
   styles: `
     :host {
@@ -73,6 +93,15 @@ export class LoginPageComponent {
   fb = inject(FormBuilder)
   router = inject(Router)
   authService = inject(AuthService)
+  loginMutation = injectMutation(() => ({
+    mutationFn: (credentials: {
+      email: string
+      password: string
+      country?: string
+    }) => this.authService.login(credentials),
+    onSuccess: () => this.router.navigateByUrl('devices'),
+  }))
+  loading = computed(() => this.loginMutation.isPending())
 
   countries = countries
 
@@ -82,8 +111,6 @@ export class LoginPageComponent {
     country: this.fb.nonNullable.control('cn', [Validators.required]),
   })
 
-  loading = signal(false)
-
   disabledFormEffect = effect(() =>
     this.loading() ? this.form.disable() : this.form.enable()
   )
@@ -92,10 +119,7 @@ export class LoginPageComponent {
     event.preventDefault()
     if (this.form.invalid) return
     const { email, password, country } = this.form.value
-    this.loading.set(true)
-    await this.authService
-      .login({ email: email!, password: password!, country })
-      .finally(() => this.loading.set(false))
-      .then(() => this.router.navigateByUrl('devices'))
+    if (!email || !password) return
+    this.loginMutation.mutate({ email, password, country })
   }
 }

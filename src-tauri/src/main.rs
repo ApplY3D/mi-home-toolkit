@@ -21,7 +21,7 @@ lazy_static! {
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 #[tauri::command]
-async fn login(email: String, password: String, country: Option<String>) -> Result<(), ()> {
+async fn login(email: String, password: String, country: Option<String>) -> Result<(), String> {
     let mut guard = MI_CLOUD_PROTOCOL.lock().await;
     if let Some(c) = country {
         guard.set_country(&c);
@@ -29,7 +29,7 @@ async fn login(email: String, password: String, country: Option<String>) -> Resu
     guard
         .login(email.as_str(), password.as_str())
         .await
-        .map_err(|_| ())
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -51,13 +51,15 @@ async fn get_device(did: String) -> Result<Vec<Device>, ()> {
 }
 
 #[tauri::command]
-async fn call_device(did: String, method: String, params: Option<String>) -> Result<Value, ()> {
+async fn call_device(did: String, method: String, params: Option<String>) -> Result<Value, String> {
     let mut guard = MI_CLOUD_PROTOCOL.lock().await;
-    let params = params.map(|params| Value::from_str(params.as_str()).unwrap());
+    let params = params
+        .map(|params| Value::from_str(params.as_str()).map_err(|err| err.to_string()))
+        .transpose()?;
     guard
         .call_device(&did, &method, params, None)
         .await
-        .map_err(|_| ())
+        .map_err(|err| err.to_string())
 }
 
 fn main() {

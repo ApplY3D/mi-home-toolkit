@@ -21,9 +21,9 @@ const notLoggedInGuardWithRedirect =
   (url: string): CanActivateFn =>
   () => {
     const router = inject(Router)
-    return loggedInGuard()
-      .pipe(tap(console.log))
-      .pipe(tap((loggedIn) => loggedIn && router.navigateByUrl(url)))
+    return loggedInGuard().pipe(
+      tap((loggedIn) => loggedIn && router.navigateByUrl(url))
+    )
   }
 
 export const routes: Routes = [
