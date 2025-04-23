@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core'
 import { BehaviorSubject } from 'rxjs'
-import { getCurrent } from '@tauri-apps/api/window'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 @Injectable({
   providedIn: 'root',
@@ -9,11 +9,11 @@ export class ConfigService {
   systemTheme$ = new BehaviorSubject<'dark' | 'light'>('dark')
 
   async init() {
-    getCurrent().onThemeChanged(
+    getCurrentWindow().onThemeChanged(
       ({ payload: theme }) => theme && this.systemTheme$.next(theme)
     )
 
-    await getCurrent()
+    await getCurrentWindow()
       .theme()
       .then((theme) => theme && this.systemTheme$.next(theme))
   }
