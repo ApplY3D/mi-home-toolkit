@@ -18,30 +18,21 @@ import { injectMutation } from '@tanstack/angular-query-experimental'
     (ngSubmit)="login($event)"
     [formGroup]="form"
   >
-    <label class="input input-bordered flex items-center gap-2">
-      <app-icon icon="email" class="w-4 h-4 opacity-70"></app-icon>
-      <input
-        class="w-full"
-        [formControlName]="'email'"
-        type="text"
-        placeholder="Login"
-      />
+    <label class="input flex items-center gap-2">
+      <span class="label"><app-icon icon="email" class="w-4 h-4" /></span>
+      <input [formControlName]="'email'" type="text" placeholder="Login" />
     </label>
 
-    <label class="input input-bordered flex items-center gap-2">
-      <app-icon icon="password" class="w-4 h-4 opacity-70"></app-icon>
+    <label class="input flex items-center gap-2">
+      <span class="label"><app-icon icon="password" class="w-4 h-4" /></span>
       <input
-        class="w-full"
         [formControlName]="'password'"
         type="password"
         placeholder="Password"
       />
     </label>
 
-    <select
-      class="select select-bordered w-full max-w-xs"
-      [formControlName]="'country'"
-    >
+    <select class="select" [formControlName]="'country'">
       <option disabled>Country</option>
       <option *ngFor="let country of countries" [value]="country[0]">
         {{ country[1] }}

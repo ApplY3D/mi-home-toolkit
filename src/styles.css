@@ -1,6 +1,10 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@plugin "daisyui" {
+  themes:
+    light --default,
+    dark --prefersdark;
+}
 
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;

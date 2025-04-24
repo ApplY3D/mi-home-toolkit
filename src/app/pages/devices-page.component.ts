@@ -14,7 +14,7 @@ import { Device } from '../types'
 
 @Component({
   template: `
-    <div class="tooltip fixed right-4 bottom-4 z-[1]" data-tip="Refresh">
+    <div class="tooltip fixed right-4 bottom-4 z-1" data-tip="Refresh">
       <button
         class="btn btn-circle btn-outline"
         (click)="devicesQuery.refetch()"

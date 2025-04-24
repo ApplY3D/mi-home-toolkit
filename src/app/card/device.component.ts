@@ -21,11 +21,12 @@ import { injectQuery } from '@tanstack/angular-query-experimental'
   template: `
     @if (deviceComputed(); as device) {
       <div class="card min-[550px]:card-side bg-base-100 shadow-xl">
-        <figure
-          class="flex-shrink-0"
-          [ngClass]="{ 'opacity-40': !device.isOnline }"
-        >
-          <img style="width: 168px;" src="{{ deviceImage() }}" />
+        <figure class="shrink-0" [ngClass]="{ 'opacity-40': !device.isOnline }">
+          <img
+            class="!object-contain"
+            style="width: 168px;"
+            src="{{ deviceImage() }}"
+          />
           <div class="absolute left-4 top-4 w-6">
             <app-icon *ngIf="device.isOnline" icon="wifi" class="w-5 h-5" />
             <app-icon
@@ -64,24 +65,24 @@ import { injectQuery } from '@tanstack/angular-query-experimental'
           <p>Model: {{ device.model }}</p>
           <p>Token: {{ device.token }}</p>
 
-          <div class="form-control" *ngIf="lanModeAvailable()">
-            <label
-              class="label cursor-pointer flex items-center justify-start gap-4 p-0"
-              (click)="lanModeChange()"
-            >
-              <span class="label-text">LAN Mode</span>
+          <label
+            class="label cursor-pointer justify-start text-inherit"
+            *ngIf="lanModeAvailable()"
+            (click)="lanModeChange()"
+          >
+            LAN Mode
+
+            @if (lanModeLoading()) {
+              <span class="loading loading-spinner loading-md"></span>
+            } @else {
               <input
-                *ngIf="!lanModeLoading()"
                 [ngModel]="lanMode()"
                 type="checkbox"
+                checked="checked"
                 class="toggle"
               />
-              <span
-                *ngIf="lanModeLoading()"
-                class="loading loading-spinner loading-md"
-              ></span>
-            </label>
-          </div>
+            }
+          </label>
         </div>
       </div>
     }

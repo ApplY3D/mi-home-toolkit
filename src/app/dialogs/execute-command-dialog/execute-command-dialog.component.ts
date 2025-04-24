@@ -32,11 +32,11 @@ import { FormBuilder, FormsModule, ReactiveFormsModule } from '@angular/forms'
           placeholder="Method"
           spellcheck="false"
           [formControlName]="'method'"
-          class="input input-bordered w-full"
+          class="input w-full"
         />
 
         <textarea
-          class="textarea textarea-bordered"
+          class="textarea w-full"
           [formControlName]="'params'"
           spellcheck="false"
           autocorrect="off"
@@ -45,7 +45,7 @@ import { FormBuilder, FormsModule, ReactiveFormsModule } from '@angular/forms'
 
         <textarea
           [readonly]="true"
-          class="textarea textarea-bordered"
+          class="textarea w-full"
           [ngClass]="{
             'textarea-error': callDeviceMutation.isError(),
             'textarea-success': callDeviceMutation.isSuccess(),

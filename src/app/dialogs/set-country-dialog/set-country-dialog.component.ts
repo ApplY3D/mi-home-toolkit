@@ -24,11 +24,7 @@ import { DialogDirective } from '../dialog.directive'
       <h3 class="font-bold text-lg mb-4">Country</h3>
 
       <div class="flex justify-around">
-        <select
-          #select
-          [disabled]="countryMutation.isPending()"
-          class="select select-bordered w-full max-w-xs"
-        >
+        <select #select [disabled]="countryMutation.isPending()" class="select">
           <option disabled>Country</option>
           <option *ngFor="let country of countries" [value]="country[0]">
             {{ country[1] }}
