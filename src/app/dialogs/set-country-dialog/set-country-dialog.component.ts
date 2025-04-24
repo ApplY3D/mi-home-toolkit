@@ -1,9 +1,9 @@
 import { CommonModule } from '@angular/common'
 import { Component, inject, model, output } from '@angular/core'
 import { injectMutation } from '@tanstack/angular-query-experimental'
-import { countries } from '../../constants'
 import { AuthService } from '../../auth.service'
 import { DialogDirective } from '../dialog.directive'
+import { MiService } from '../../mi.service'
 
 @Component({
   selector: 'app-set-country-dialog',
@@ -21,14 +21,15 @@ import { DialogDirective } from '../dialog.directive'
         ✕
       </button>
 
-      <h3 class="font-bold text-lg mb-4">Country</h3>
+      <h3 class="font-bold text-lg mb-4">Server Location</h3>
 
       <div class="flex justify-around">
         <select #select [disabled]="countryMutation.isPending()" class="select">
-          <option disabled>Country</option>
-          <option *ngFor="let country of countries" [value]="country[0]">
+          <option disabled>Server Location</option>
+          <option *ngFor="let country of countries()" [value]="country[0]">
             {{ country[1] }}
           </option>
+          <option disabled>If not listed, try matching from above</option>
         </select>
 
         <button
@@ -49,6 +50,8 @@ export class SetCountryDialogComponent {
   countryChanged = output()
 
   authService = inject(AuthService)
+  miService = inject(MiService)
+  countries = this.miService.countries.value
 
   countryMutation = injectMutation(() => ({
     mutationFn: (country: string) => this.authService.setCountry(country),
@@ -59,6 +62,4 @@ export class SetCountryDialogComponent {
     if (!country || this.countryMutation.isPending()) return
     this.countryMutation.mutate(country)
   }
-
-  countries = countries
 }

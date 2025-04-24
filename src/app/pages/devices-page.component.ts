@@ -1,12 +1,9 @@
 import { CommonModule } from '@angular/common'
-import { Component, inject, signal } from '@angular/core'
+import { Component, computed, inject, signal } from '@angular/core'
 import { DeviceComponent } from '../card/device.component'
 import { MiService } from '../mi.service'
 import { IconComponent } from '../icon/icon.component'
 import { AuthService } from '../auth.service'
-import { toSignal } from '@angular/core/rxjs-interop'
-import { map } from 'rxjs'
-import { countryCodeToName } from '../constants'
 import { SetCountryDialogComponent } from '../dialogs/set-country-dialog/set-country-dialog.component'
 import { injectQuery } from '@tanstack/angular-query-experimental'
 import { ExecuteCommandDialogComponent } from '../dialogs/execute-command-dialog/execute-command-dialog.component'
@@ -46,9 +43,12 @@ import { Device } from '../types'
           } @else if (devicesQuery.isFetched()) {
             No devices found for {{ country() }}.
             <div>
-              <a (click)="changeCountryDialogVisible.set(true)" class="link">
-                Change country
-              </a>
+              <button
+                (click)="changeCountryDialogVisible.set(true)"
+                class="btn btn-link"
+              >
+                Change Server Location
+              </button>
             </div>
           }
         </div>
@@ -84,9 +84,9 @@ export class DevicesPageComponent {
     staleTime: 1000 * 60 * 10,
   }))
 
-  country = toSignal(
-    this.authService.user$.pipe(
-      map((u) => countryCodeToName.get(u?.country as 'ru'))
-    )
-  )
+  country = computed(() => {
+    const user = this.authService.user()
+    if (!user?.country) return null
+    return this.miService.countryCodeToName().get(user.country)
+  })
 }

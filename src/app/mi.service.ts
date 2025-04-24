@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core'
+import { computed, Injectable, resource } from '@angular/core'
 import { invoke } from '@tauri-apps/api/core'
 import { GetDevicesResponse } from './types'
 
@@ -12,6 +12,12 @@ export class MiService {
 
   setCountry(country: string) {
     return invoke('set_country', { country })
+  }
+
+  countries = resource({ defaultValue: [], loader: () => this.getCountries() })
+  countryCodeToName = computed(() => new Map(this.countries.value()))
+  private getCountries() {
+    return invoke<[code: string, name: string][]>('get_countries')
   }
 
   getDevices() {

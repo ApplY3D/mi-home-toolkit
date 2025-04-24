@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core'
 import { MiService } from './mi.service'
 import { BehaviorSubject, map } from 'rxjs'
+import { toSignal } from '@angular/core/rxjs-interop'
 
 type User = { email: string; country?: string }
 
@@ -11,6 +12,7 @@ export class AuthService {
   miService = inject(MiService)
 
   user$ = new BehaviorSubject<User | null>(null)
+  user = toSignal(this.user$)
   loggedIn$ = this.user$.pipe(map(Boolean))
 
   async setCountry(country: string) {

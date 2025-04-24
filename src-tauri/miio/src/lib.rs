@@ -86,7 +86,6 @@ pub struct MiCloudProtocol {
     service_token: Option<String>,
     user_agent: String,
     client_id: String,
-    countries: Vec<&'static str>,
     locale: &'static str,
 }
 
@@ -178,9 +177,20 @@ impl MiCloudProtocol {
                 agent_id.clone()
             ),
             client_id,
-            countries: vec!["ru", "us", "tw", "sg", "cn", "de"],
             locale: "en",
         }
+    }
+
+    pub fn get_available_countries(&self) -> Vec<Vec<&'static str>> {
+        vec![
+            vec!["cn", "China"],
+            vec!["ru", "Russia"],
+            vec!["us", "USA"],
+            vec!["i2", "India"],
+            vec!["tw", "Taiwan"],
+            vec!["sg", "Singapore"],
+            vec!["de", "Germany"],
+        ] // https://www.openhab.org/addons/bindings/miio/#country-servers
     }
 
     /// Authenticates a user with Mi Cloud.
@@ -223,8 +233,14 @@ impl MiCloudProtocol {
         Ok(())
     }
 
+    pub fn is_country_supported(&self, country: &str) -> bool {
+        self.get_available_countries()
+            .iter()
+            .any(|x| x[0] == country)
+    }
+
     pub fn set_country(&mut self, country: &str) {
-        if self.countries.contains(&country) {
+        if self.is_country_supported(country) {
             self.country = country.to_string();
         }
     }
@@ -420,9 +436,9 @@ impl MiCloudProtocol {
             return Err(anyhow!("Request error: Not logged in"));
         }
 
-        if !self.countries.contains(&country) {
+        if !self.is_country_supported(country) {
             return Err(anyhow!(
-                "Request error: Country {} is not supported",
+                "Request error: Server Location {} is not supported",
                 country
             ));
         }

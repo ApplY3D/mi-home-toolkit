@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common'
-import { Component, computed, effect, inject, signal } from '@angular/core'
+import { Component, computed, effect, inject } from '@angular/core'
 import { IconComponent } from '../icon/icon.component'
 import {
   FormBuilder,
@@ -9,8 +9,8 @@ import {
 } from '@angular/forms'
 import { AuthService } from '../auth.service'
 import { Router } from '@angular/router'
-import { countries } from '../constants'
 import { injectMutation } from '@tanstack/angular-query-experimental'
+import { MiService } from '../mi.service'
 
 @Component({
   template: `<form
@@ -33,10 +33,11 @@ import { injectMutation } from '@tanstack/angular-query-experimental'
     </label>
 
     <select class="select" [formControlName]="'country'">
-      <option disabled>Country</option>
-      <option *ngFor="let country of countries" [value]="country[0]">
+      <option disabled>Server location</option>
+      <option *ngFor="let country of countries()" [value]="country[0]">
         {{ country[1] }}
       </option>
+      <option disabled>If not listed, try matching from above</option>
     </select>
 
     <button
@@ -83,6 +84,7 @@ export class LoginPageComponent {
   fb = inject(FormBuilder)
   router = inject(Router)
   authService = inject(AuthService)
+  miService = inject(MiService)
   loginMutation = injectMutation(() => ({
     mutationFn: (credentials: {
       email: string
@@ -93,7 +95,7 @@ export class LoginPageComponent {
   }))
   loading = computed(() => this.loginMutation.isPending())
 
-  countries = countries
+  countries = this.miService.countries.value
 
   form = this.fb.nonNullable.group({
     email: this.fb.nonNullable.control('', [Validators.required]),

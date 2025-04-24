@@ -33,6 +33,12 @@ async fn login(email: String, password: String, country: Option<String>) -> Resu
 }
 
 #[tauri::command]
+async fn get_countries() -> Vec<Vec<&'static str>> {
+    let mut guard = MI_CLOUD_PROTOCOL.lock().await;
+    guard.get_available_countries()
+}
+
+#[tauri::command]
 async fn set_country(country: String) {
     let mut guard = MI_CLOUD_PROTOCOL.lock().await;
     guard.set_country(&country)
@@ -77,6 +83,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             login,
+            get_countries,
             set_country,
             get_device,
             get_devices,
