@@ -22,7 +22,7 @@ A versatile tool for managing Mi Home smart devices.
 ### 2. Use the app
 
 ![Devices screen](.github/images/devices-screen.png)
-![Execute command](.github/images/execuse-command.png)
+![Execute command](.github/images/execute-command.png)
 
 ## Download
 
