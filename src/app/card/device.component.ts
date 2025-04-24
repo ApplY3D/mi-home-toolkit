@@ -20,12 +20,16 @@ import { injectQuery } from '@tanstack/angular-query-experimental'
   selector: 'app-device',
   template: `
     @if (deviceComputed(); as device) {
-      <div class="card min-[550px]:card-side bg-base-100 shadow-xl">
+      <div
+        class="card min-[550px]:card-side bg-base-100 shadow-xl"
+        [class.pointer-events-none]="deviceQuery.isFetching()"
+        [class.opacity-60]="deviceQuery.isFetching()"
+      >
         <figure class="shrink-0" [ngClass]="{ 'opacity-40': !device.isOnline }">
           <img
             class="!object-contain"
             style="width: 168px;"
-            src="{{ deviceImage() }}"
+            [src]="deviceImage()"
           />
           <div class="absolute left-4 top-4 w-6">
             <app-icon *ngIf="device.isOnline" icon="wifi" class="w-5 h-5" />
@@ -107,12 +111,12 @@ export class DeviceComponent {
       queryKey: ['device', device.did],
       initialData: device,
       enabled: false,
+      structuralSharing: false,
     }
   })
   private source = signal<'input' | 'query'>('input')
   private inputSourceEffect = effect(
-    () => (this.device(), this.source.set('input')),
-    { allowSignalWrites: true }
+    () => (this.device(), this.source.set('input'))
   )
   deviceComputed = computed(() =>
     this.source() === 'input' ? this.device() : this.deviceQuery.data()
@@ -125,7 +129,6 @@ export class DeviceComponent {
     deviceToImageMap.get(this.deviceComputed().model)
   )
 
-  lanModeUpdate = signal(0)
   lanMode = signal(false)
   lanModeAvailable = computed(
     () =>
@@ -133,21 +136,18 @@ export class DeviceComponent {
       this.deviceComputed().model.startsWith('yeelink.light')
   )
   lanModeLoading = signal(false)
-  lanModeEffect = effect(
-    () => {
-      const device = untracked(() => this.deviceComputed())
-      const lanModeLoading = untracked(() => this.lanModeLoading())
-      const lanModeAvailable = this.lanModeAvailable()
-      if (lanModeAvailable && !lanModeLoading) {
-        this.lanModeLoading.set(true)
-        this.miService
-          .getProp({ did: device.did, name: ['lan_ctrl'] })
-          .then((res) => this.lanMode.set((res as any)[0] === '1'))
-          .finally(() => this.lanModeLoading.set(false))
-      }
-    },
-    { allowSignalWrites: true }
-  )
+  lanModeEffect = effect(() => {
+    const device = this.deviceComputed()
+    const lanModeLoading = untracked(() => this.lanModeLoading())
+    const lanModeAvailable = this.lanModeAvailable()
+    if (lanModeAvailable && !lanModeLoading) {
+      this.lanModeLoading.set(true)
+      this.miService
+        .getProp({ did: device.did, name: ['lan_ctrl'] })
+        .then((res) => this.lanMode.set((res as any)[0] === '1'))
+        .finally(() => this.lanModeLoading.set(false))
+    }
+  })
   lanModeChange() {
     const lanModeLoading = this.lanModeLoading()
     if (lanModeLoading) return

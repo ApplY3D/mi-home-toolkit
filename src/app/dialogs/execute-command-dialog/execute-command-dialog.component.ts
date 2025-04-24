@@ -1,4 +1,11 @@
-import { Component, computed, effect, inject, model } from '@angular/core'
+import {
+  Component,
+  computed,
+  effect,
+  inject,
+  model,
+  output,
+} from '@angular/core'
 import { injectMutation } from '@tanstack/angular-query-experimental'
 import { MiService } from '../../mi.service'
 import { CommonModule } from '@angular/common'
@@ -76,12 +83,18 @@ export class ExecuteCommandDialogComponent {
   did = computed(() => this.device()?.did)
   visible = computed(() => !!this.device())
 
+  success = output()
+
   miService = inject(MiService)
 
   form = this.fb.group({
     method: '',
     params: '',
     result: '' as any,
+  })
+
+  private visibleEffect = effect(() => {
+    if (this.visible()) this.callDeviceMutation.reset()
   })
 
   openCloseEffect = effect(() => this.visible() && this.form.reset())
@@ -92,6 +105,7 @@ export class ExecuteCommandDialogComponent {
       method: string
       params?: string | null
     }) => this.miService.callDevice(data),
+    onSuccess: () => this.success.emit(),
   }))
 
   callDeviceResultEffect = effect(() => {

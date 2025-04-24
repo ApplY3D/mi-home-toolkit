@@ -1,5 +1,11 @@
 import { CommonModule } from '@angular/common'
-import { Component, computed, inject, signal } from '@angular/core'
+import {
+  Component,
+  computed,
+  inject,
+  signal,
+  viewChildren,
+} from '@angular/core'
 import { DeviceComponent } from '../card/device.component'
 import { MiService } from '../mi.service'
 import { IconComponent } from '../icon/icon.component'
@@ -60,7 +66,10 @@ import { Device } from '../types'
       (countryChanged)="devicesQuery.refetch()"
     />
 
-    <app-execute-command-dialog [(device)]="executeCommandForDevice" />
+    <app-execute-command-dialog
+      [(device)]="executeCommandForDevice"
+      (success)="invalidateDevice()"
+    />
   `,
   styles: [``],
   imports: [
@@ -78,10 +87,13 @@ export class DevicesPageComponent {
   miService = inject(MiService)
   authService = inject(AuthService)
 
+  deviceComponents = viewChildren(DeviceComponent)
+
   devicesQuery = injectQuery(() => ({
     queryKey: ['devices'],
     queryFn: () => this.miService.getDevices(),
     staleTime: 1000 * 60 * 10,
+    structuralSharing: false,
   }))
 
   country = computed(() => {
@@ -89,4 +101,13 @@ export class DevicesPageComponent {
     if (!user?.country) return null
     return this.miService.countryCodeToName().get(user.country)
   })
+
+  invalidateDevice() {
+    const did = this.executeCommandForDevice()?.did
+    if (!did) return
+    const index = this.devicesQuery.data()?.findIndex((d) => d.did === did)
+    if (typeof index === 'number' && index >= 0) {
+      this.deviceComponents().at(index)?.refreshDevice()
+    }
+  }
 }
