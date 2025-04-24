@@ -3,14 +3,21 @@ import { provideRouter } from '@angular/router'
 import { routes } from './app.routes'
 import { ConfigService } from './config.service'
 import {
-  provideAngularQuery,
+  provideTanStackQuery,
   QueryClient,
+  withDevtools,
 } from '@tanstack/angular-query-experimental'
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideRouter(routes),
-    provideAngularQuery(new QueryClient()),
+    provideTanStackQuery(
+      new QueryClient(),
+      withDevtools(() => ({
+        loadDevtools: 'auto',
+        buttonPosition: 'bottom-left',
+      }))
+    ),
     provideAppInitializer(() => {
       const initializerFn = ConfigService.factory(inject(ConfigService))
       return initializerFn()
