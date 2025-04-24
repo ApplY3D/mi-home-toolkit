@@ -6,7 +6,6 @@ import { AuthService } from '../../auth.service'
 import { DialogDirective } from '../dialog.directive'
 
 @Component({
-  standalone: true,
   selector: 'app-set-country-dialog',
   template: ` <dialog class="modal" app-dialog [visible]="visible()">
     <form

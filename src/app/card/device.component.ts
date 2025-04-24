@@ -17,7 +17,6 @@ import { FormsModule } from '@angular/forms'
 import { injectQuery } from '@tanstack/angular-query-experimental'
 
 @Component({
-  standalone: true,
   selector: 'app-device',
   template: `
     @if (deviceComputed(); as device) {

@@ -1,4 +1,4 @@
-import { APP_INITIALIZER, ApplicationConfig } from '@angular/core'
+import { ApplicationConfig, inject, provideAppInitializer } from '@angular/core'
 import { provideRouter } from '@angular/router'
 import { routes } from './app.routes'
 import { ConfigService } from './config.service'
@@ -11,11 +11,9 @@ export const appConfig: ApplicationConfig = {
   providers: [
     provideRouter(routes),
     provideAngularQuery(new QueryClient()),
-    {
-      provide: APP_INITIALIZER,
-      useFactory: ConfigService.factory,
-      deps: [ConfigService],
-      multi: true,
-    },
+    provideAppInitializer(() => {
+      const initializerFn = ConfigService.factory(inject(ConfigService))
+      return initializerFn()
+    }),
   ],
 }

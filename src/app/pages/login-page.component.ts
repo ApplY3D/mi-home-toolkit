@@ -13,7 +13,6 @@ import { countries } from '../constants'
 import { injectMutation } from '@tanstack/angular-query-experimental'
 
 @Component({
-  standalone: true,
   template: `<form
     class="flex flex-col gap-2 w-80"
     (ngSubmit)="login($event)"

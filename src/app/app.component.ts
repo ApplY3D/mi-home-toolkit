@@ -4,7 +4,6 @@ import { ConfigService } from './config.service'
 
 @Component({
   selector: 'app-root',
-  standalone: true,
   styles: `
     :host {
       display: block;

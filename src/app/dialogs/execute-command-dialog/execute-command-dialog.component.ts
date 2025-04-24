@@ -6,7 +6,6 @@ import { DialogDirective } from '../dialog.directive'
 import { FormBuilder, FormsModule, ReactiveFormsModule } from '@angular/forms'
 
 @Component({
-  standalone: true,
   selector: 'app-execute-command-dialog',
   template: ` <dialog class="modal" app-dialog [visible]="visible()">
     <form
@@ -49,7 +48,7 @@ import { FormBuilder, FormsModule, ReactiveFormsModule } from '@angular/forms'
           class="textarea textarea-bordered"
           [ngClass]="{
             'textarea-error': callDeviceMutation.isError(),
-            'textarea-success': callDeviceMutation.isSuccess()
+            'textarea-success': callDeviceMutation.isSuccess(),
           }"
           placeholder="Result"
           spellcheck="false"

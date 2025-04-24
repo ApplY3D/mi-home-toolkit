@@ -13,7 +13,6 @@ import { ExecuteCommandDialogComponent } from '../dialogs/execute-command-dialog
 import { Device } from '../types'
 
 @Component({
-  standalone: true,
   template: `
     <div class="tooltip fixed right-4 bottom-4 z-[1]" data-tip="Refresh">
       <button
