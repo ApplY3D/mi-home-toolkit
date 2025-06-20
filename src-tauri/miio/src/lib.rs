@@ -24,6 +24,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
     vec,
 };
+use uuid::Uuid;
 
 fn parse_response_json(str: &str) -> serde_json::Result<Value> {
     let str = if str.starts_with("&&&START&&&") {
@@ -147,12 +148,10 @@ impl MiCloudProtocol {
             iter::repeat_with(|| b"ABCDEF"[rng.gen_range(0..b"ABCDEF".len())] as char)
                 .take(13)
                 .collect();
-        let client_id: String = iter::repeat_with(|| {
-            b"ABCDEFGHIJKLMNOPQRSTUVWXYZ"[rng.gen_range(0..b"ABCDEFGHIJKLMNOPQRSTUVWXYZ".len())]
-                as char
-        })
-        .take(6)
-        .collect();
+
+        let uuidv4 = Uuid::new_v4();
+        // Another known type of client_id (deviceId) is "wb_{uuidv4}", which likely stands for "web browser"
+        let client_id: String = format!("android_{uuidv4}").to_string();
 
         let xiaomi_base_url = "api.io.mi.com/app";
         MiCloudProtocol {
@@ -218,7 +217,7 @@ impl MiCloudProtocol {
     pub async fn login(&mut self, username: &str, password: &str) -> Result<()> {
         let client = Client::new();
         let password_md5 = hex_digest(Algorithm::MD5, password.as_bytes()).to_uppercase();
-        let (sign, _) = self.login_step1(&client).await?;
+        let (sign, _) = self.login_step1(&client, username).await?;
         let (ssecurity, user_id, location) = self
             .login_step2(&client, username, password_md5.as_str(), &sign)
             .await?;
@@ -315,10 +314,25 @@ impl MiCloudProtocol {
         self.urls = urls;
     }
 
-    async fn login_step1(&self, client: &Client) -> Result<(String, String)> {
+    async fn login_step1(&self, client: &Client, username: &str) -> Result<(String, String)> {
         let url = self.urls.login_step1.clone();
-        let query = (("sid", "xiaomiio"), ("_json", "true"));
-        let res = client.get(url).query(&query).send().await?;
+        let mut query: Vec<(&'static str, String)> = vec![
+            ("sid", "xiaomiio".to_string()),
+            ("_json", "true".to_string()),
+            ("_locale", "en_US".to_string()),
+        ];
+
+        let res = client
+            .get(url)
+            .header(header::HOST, "account.xiaomi.com")
+            .header(
+                header::COOKIE,
+                format!("userId={}; deviceId={}", username, self.client_id),
+            )
+            .header(header::USER_AGENT, &self.user_agent)
+            .query(&query)
+            .send()
+            .await?;
 
         let status = res.status();
         let content = res.text().await?;
@@ -348,25 +362,28 @@ impl MiCloudProtocol {
         password_md5: &str,
         sign: &str,
     ) -> Result<(String, i64, String)> {
-        let form_data = [
+        let form_data = vec![
             ("hash", password_md5.to_string().clone()),
             ("_json", "true".to_string()),
+            ("_locale", "en_US".to_string()),
             ("sid", "xiaomiio".to_string()),
             ("callback", "https://sts.api.io.mi.com/sts".to_string()),
-            ("qs", "%3Fsid%3Dxiaomiio%26_json%3Dtrue".to_string()),
+            (
+                "qs",
+                "%3Fsid%3Dxiaomiio%26_json%3Dtrue%26_locale%3Den_US".to_string(),
+            ),
             ("_sign", sign.to_string()),
             ("user", username.to_string()),
+            ("captCode", "".to_string()),
         ];
 
         let url = self.urls.login_step2.clone();
         let res = client
             .post(url)
             .form(&form_data)
+            .header(header::HOST, "account.xiaomi.com")
+            .header(header::COOKIE, format!("deviceId={}", self.client_id))
             .header(header::USER_AGENT, &self.user_agent)
-            .header(
-                header::COOKIE,
-                format!("sdkVersion=accountsdk-18.8.15; deviceId={}", self.client_id),
-            )
             .send()
             .await?;
 
@@ -381,6 +398,10 @@ impl MiCloudProtocol {
         }
 
         let data = parse_response_json(&content)?;
+
+        if let Some(_) = data["captchaUrl"].as_str() {
+            return Err(anyhow!("Login step 2 failed: Captcha"));
+        }
         let ssecurity = match data["ssecurity"].as_str() {
             Some(s) => s.to_string(),
             None => {
