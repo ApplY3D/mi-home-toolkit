@@ -1,6 +1,6 @@
 {
   "productName": "Mi Home Toolkit",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "identifier": "com.mi-home-toolkit",
   "build": {
     "beforeDevCommand": "pnpm start",
