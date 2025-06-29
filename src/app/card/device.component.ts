@@ -31,8 +31,8 @@ import { injectQuery } from '@tanstack/angular-query-experimental'
             style="width: 168px;"
             [src]="deviceImage()"
           />
-          <div class="absolute left-4 top-4 w-6">
-            <app-icon *ngIf="device.isOnline" icon="wifi" class="w-5 h-5" />
+          <div class="absolute left-4 top-4 w-6! h-6!">
+            <app-icon *ngIf="device.isOnline" icon="wifi" class="w-6 h-6" />
             <app-icon
               *ngIf="!device.isOnline"
               icon="wifi_off"
