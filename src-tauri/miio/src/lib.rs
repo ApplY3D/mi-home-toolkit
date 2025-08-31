@@ -26,6 +26,16 @@ use std::{
 };
 use uuid::Uuid;
 
+mod captcha;
+pub use captcha::CaptchaState;
+pub enum ExtendedCaptchaSolution {
+    Solved(String),
+    Cancel,
+    NotNeeded,
+}
+
+use crate::captcha::CaptchaSolution;
+
 fn parse_response_json(str: &str) -> serde_json::Result<Value> {
     let str = if str.starts_with("&&&START&&&") {
         &str[11..]
@@ -88,6 +98,8 @@ pub struct MiCloudProtocol {
     user_agent: String,
     client_id: String,
     locale: &'static str,
+    captcha_handler: Option<Box<dyn Fn(String) + Send + Sync>>,
+    captcha_state: CaptchaState,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -177,6 +189,8 @@ impl MiCloudProtocol {
             ),
             client_id,
             locale: "en",
+            captcha_handler: None,
+            captcha_state: CaptchaState::new(),
         }
     }
 
@@ -219,7 +233,7 @@ impl MiCloudProtocol {
         let password_md5 = hex_digest(Algorithm::MD5, password.as_bytes()).to_uppercase();
         let (sign, _) = self.login_step1(&client, username).await?;
         let (ssecurity, user_id, location) = self
-            .login_step2(&client, username, password_md5.as_str(), &sign)
+            .login_step2(&client, username, password_md5.as_str(), &sign, None)
             .await?;
         let service_token = self.login_step3(&client, location).await?;
 
@@ -314,45 +328,67 @@ impl MiCloudProtocol {
         self.urls = urls;
     }
 
+    pub fn _set_captcha_handler(&mut self, handler: Box<dyn Fn(String) + Send + Sync>) {
+        self.captcha_handler = Some(handler);
+    }
+
     async fn login_step1(&self, client: &Client, username: &str) -> Result<(String, String)> {
-        let url = self.urls.login_step1.clone();
-        let mut query: Vec<(&'static str, String)> = vec![
-            ("sid", "xiaomiio".to_string()),
-            ("_json", "true".to_string()),
-            ("_locale", "en_US".to_string()),
-        ];
+        let mut captcha: Option<String> = None;
+        loop {
+            let url = self.urls.login_step1.clone();
+            let mut query: Vec<(&'static str, String)> = vec![
+                ("sid", "xiaomiio".to_string()),
+                ("_json", "true".to_string()),
+                ("_locale", "en_US".to_string()),
+            ];
 
-        let res = client
-            .get(url)
-            .header(header::HOST, "account.xiaomi.com")
-            .header(
-                header::COOKIE,
-                format!("userId={}; deviceId={}", username, self.client_id),
-            )
-            .header(header::USER_AGENT, &self.user_agent)
-            .query(&query)
-            .send()
-            .await?;
-
-        let status = res.status();
-        let content = res.text().await?;
-
-        if !status.is_success() {
-            return Err(anyhow!(format!(
-                "Login step 1 failed: Response status {}",
-                status
-            ),));
-        }
-
-        let data = parse_response_json(&content)?;
-        let sign = match data["_sign"].as_str() {
-            Some(s) => s.to_string(),
-            None => {
-                return Err(anyhow!("Login step 1 failed: No '_sign' in response"));
+            if let Some(c) = captcha.clone() {
+                query.push(("captCode", c))
             }
-        };
 
-        Ok((sign, content))
+            let res = client
+                .get(url)
+                .header(header::HOST, "account.xiaomi.com")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(
+                    header::COOKIE,
+                    format!("userId={}; deviceId={}", username, self.client_id),
+                )
+                .header(header::USER_AGENT, &self.user_agent)
+                .query(&query)
+                .send()
+                .await?;
+
+            let status = res.status();
+            let content = res.text().await?;
+
+            if !status.is_success() {
+                return Err(anyhow!(format!(
+                    "Login step 1 failed: Response status {}",
+                    status
+                ),));
+            }
+
+            let data = parse_response_json(&content)?;
+            match self.with_captcha_solving(data.clone()).await {
+                ExtendedCaptchaSolution::Solved(value) => {
+                    captcha = Some(value);
+                    continue;
+                }
+                ExtendedCaptchaSolution::Cancel => {
+                    return Err(anyhow!("Captcha cancelled"));
+                }
+                ExtendedCaptchaSolution::NotNeeded => {}
+            }
+            let sign = match data["_sign"].as_str() {
+                Some(s) => s.to_string(),
+                None => {
+                    return Err(anyhow!("Login step 1 failed: No '_sign' in response"));
+                }
+            };
+
+            return Ok((sign, content));
+        }
     }
 
     async fn login_step2(
@@ -361,67 +397,79 @@ impl MiCloudProtocol {
         username: &str,
         password_md5: &str,
         sign: &str,
+        mut captcha: Option<String>,
     ) -> Result<(String, i64, String)> {
-        let form_data = vec![
-            ("hash", password_md5.to_string().clone()),
-            ("_json", "true".to_string()),
-            ("_locale", "en_US".to_string()),
-            ("sid", "xiaomiio".to_string()),
-            ("callback", "https://sts.api.io.mi.com/sts".to_string()),
-            (
-                "qs",
-                "%3Fsid%3Dxiaomiio%26_json%3Dtrue%26_locale%3Den_US".to_string(),
-            ),
-            ("_sign", sign.to_string()),
-            ("user", username.to_string()),
-            ("captCode", "".to_string()),
-        ];
+        loop {
+            let form_data = vec![
+                ("hash", password_md5.to_string().clone()),
+                ("_json", "true".to_string()),
+                ("_locale", "en_US".to_string()),
+                ("sid", "xiaomiio".to_string()),
+                ("callback", "https://sts.api.io.mi.com/sts".to_string()),
+                (
+                    "qs",
+                    "%3Fsid%3Dxiaomiio%26_json%3Dtrue%26_locale%3Den_US".to_string(),
+                ),
+                ("_sign", sign.to_string()),
+                ("user", username.to_string()),
+                ("captCode", captcha.unwrap_or("".to_string())),
+            ];
 
-        let url = self.urls.login_step2.clone();
-        let res = client
-            .post(url)
-            .form(&form_data)
-            .header(header::HOST, "account.xiaomi.com")
-            .header(header::COOKIE, format!("deviceId={}", self.client_id))
-            .header(header::USER_AGENT, &self.user_agent)
-            .send()
-            .await?;
+            let url = self.urls.login_step2.clone();
+            let req = client
+                .post(url)
+                .form(&form_data)
+                .header(header::HOST, "account.xiaomi.com")
+                .header(header::COOKIE, format!("deviceId={}", self.client_id))
+                .header(header::USER_AGENT, &self.user_agent);
 
-        let status = res.status();
-        let content = res.text().await.unwrap_or("".to_string());
+            let res = req.send().await?;
 
-        if !status.is_success() {
-            return Err(anyhow!(format!(
-                "Login step 2 failed: Response status {}",
-                status
-            ),));
+            let status = res.status();
+            let content = res.text().await.unwrap_or("".to_string());
+
+            if !status.is_success() {
+                return Err(anyhow!(format!(
+                    "Login step 2 failed: Response status {}",
+                    status
+                ),));
+            }
+
+            let data = parse_response_json(&content)?;
+            // data['code']:
+            // 20003 InvalidUserNameException
+            // 22009 PackageNameDeniedException
+            // 70002 InvalidCredentialException
+            // 70016 InvalidCredentialException with captchaUrl / Password error
+            // 81003 NeedVerificationException
+            // 87001 InvalidResponseException captCode error
+            // other NeedCaptchaException
+
+            match self.with_captcha_solving(data.clone()).await {
+                ExtendedCaptchaSolution::Solved(value) => {
+                    captcha = Some(value);
+                    continue;
+                }
+                ExtendedCaptchaSolution::Cancel => {
+                    return Err(anyhow!("Captcha cancelled"));
+                }
+                ExtendedCaptchaSolution::NotNeeded => {}
+            }
+            if let Some(ssecurity) = data["ssecurity"].as_str() {
+                let user_id = data["userId"]
+                    .as_i64()
+                    .ok_or_else(|| anyhow!("Login step 2 failed: No 'userId'"))?;
+                let location = data["location"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("Login step 2 failed: No 'location'"))?;
+                return Ok((ssecurity.to_string(), user_id, location.to_string()));
+            }
+
+            return Err(anyhow!(
+                "Login step 2 failed: No 'ssecurity' in response. Response: {}",
+                content
+            ));
         }
-
-        let data = parse_response_json(&content)?;
-
-        if let Some(_) = data["captchaUrl"].as_str() {
-            return Err(anyhow!("Login step 2 failed: Captcha"));
-        }
-        let ssecurity = match data["ssecurity"].as_str() {
-            Some(s) => s.to_string(),
-            None => {
-                return Err(anyhow!("Login step 2 failed: No 'ssecurity' in response"));
-            }
-        };
-        let user_id = match data["userId"].as_i64() {
-            Some(i) => i,
-            None => {
-                return Err(anyhow!("Login step 2 failed: No 'userId' in response"));
-            }
-        };
-        let location = match data["location"].as_str() {
-            Some(s) => s.to_string(),
-            None => {
-                return Err(anyhow!("Login step 2 failed: No 'location' in response"));
-            }
-        };
-
-        Ok((ssecurity, user_id, location))
     }
 
     async fn login_step3(&self, client: &Client, url: String) -> Result<String> {
@@ -443,6 +491,35 @@ impl MiCloudProtocol {
             }
             Err(e) => Err(anyhow!(e).context("Login step 3 failed")),
         }
+    }
+
+    pub async fn with_captcha_solving(&self, response_json: Value) -> ExtendedCaptchaSolution {
+        if let Some(captcha_url) = response_json["captchaUrl"].as_str() {
+            if let Some(handler) = &self.captcha_handler {
+                let full_url = format!("https://account.xiaomi.com{captcha_url}");
+                let result = self
+                    .captcha_state
+                    .captcha_request_solve(full_url.clone(), |url| async move {
+                        let _ = handler(url);
+                    })
+                    .await;
+
+                return match result {
+                    Ok(CaptchaSolution::Solved(v)) => ExtendedCaptchaSolution::Solved(v),
+                    _ => ExtendedCaptchaSolution::Cancel,
+                };
+            }
+        }
+
+        ExtendedCaptchaSolution::NotNeeded
+    }
+
+    pub async fn captcha_solve(&self, value: &str) {
+        self.captcha_state.solve(value.to_string()).await
+    }
+
+    pub async fn captcha_cancel(&self) {
+        self.captcha_state.cancel().await
     }
 
     async fn request(

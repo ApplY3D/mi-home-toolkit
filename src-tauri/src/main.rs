@@ -5,67 +5,77 @@ extern crate anyhow;
 extern crate miio;
 extern crate serde_json;
 
-use lazy_static::lazy_static;
 use miio::{Device, MiCloudProtocol};
 use serde_json::Value;
-use std::{str::FromStr, sync::Arc};
+use std::{cell::UnsafeCell, mem::MaybeUninit, str::FromStr, sync::Once};
+use tauri::{Emitter, Listener};
 use tauri_plugin_log::{Builder, Target, TargetKind};
-use tokio::sync::Mutex;
 
-lazy_static! {
-    static ref MI_CLOUD_PROTOCOL: Arc<Mutex<MiCloudProtocol>> =
-        Arc::new(Mutex::new(MiCloudProtocol::new()));
-}
+pub static mut MI_CLOUD_PROTOCOL_UNSAFE: MaybeUninit<UnsafeCell<MiCloudProtocol>> =
+    MaybeUninit::uninit();
+static ONCE: Once = Once::new();
 
 //TODO: rm .map_err(|_| ()) https://tauri.app/v1/guides/features/command/#error-handling
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 #[tauri::command]
 async fn login(email: String, password: String, country: Option<String>) -> Result<(), String> {
-    let mut guard = MI_CLOUD_PROTOCOL.lock().await;
-    if let Some(c) = country {
-        guard.set_country(&c);
+    unsafe {
+        let mut guard = &mut *MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+        if let Some(c) = country {
+            guard.set_country(&c);
+        }
+        guard
+            .login(email.as_str(), password.as_str())
+            .await
+            .map_err(|err| err.to_string())
     }
-    guard
-        .login(email.as_str(), password.as_str())
-        .await
-        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 async fn get_countries() -> Vec<Vec<&'static str>> {
-    let mut guard = MI_CLOUD_PROTOCOL.lock().await;
-    guard.get_available_countries()
+    unsafe {
+        let mut guard = &*MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+        guard.get_available_countries()
+    }
 }
 
 #[tauri::command]
 async fn set_country(country: String) {
-    let mut guard = MI_CLOUD_PROTOCOL.lock().await;
-    guard.set_country(&country)
+    unsafe {
+        let mut guard = &mut *MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+        guard.set_country(&country)
+    }
 }
 
 #[tauri::command]
 async fn get_devices() -> Result<Vec<Device>, ()> {
-    let mut guard = MI_CLOUD_PROTOCOL.lock().await;
-    guard.get_devices(None, None).await.map_err(|_| ())
+    unsafe {
+        let mut guard = &*MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+        guard.get_devices(None, None).await.map_err(|_| ())
+    }
 }
 
 #[tauri::command]
 async fn get_device(did: String) -> Result<Vec<Device>, ()> {
-    let mut guard = MI_CLOUD_PROTOCOL.lock().await;
-    guard.get_device(&did, None).await.map_err(|_| ())
+    unsafe {
+        let mut guard = &*MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+        guard.get_device(&did, None).await.map_err(|_| ())
+    }
 }
 
 #[tauri::command]
 async fn call_device(did: String, method: String, params: Option<String>) -> Result<Value, String> {
-    let mut guard = MI_CLOUD_PROTOCOL.lock().await;
-    let params = params
-        .map(|params| Value::from_str(params.as_str()).map_err(|err| err.to_string()))
-        .transpose()?;
-    guard
-        .call_device(&did, &method, params, None)
-        .await
-        .map_err(|err| err.to_string())
+    unsafe {
+        let mut guard = &*MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+        let params = params
+            .map(|params| Value::from_str(params.as_str()).map_err(|err| err.to_string()))
+            .transpose()?;
+        guard
+            .call_device(&did, &method, params, None)
+            .await
+            .map_err(|err| err.to_string())
+    }
 }
 
 fn main() {
@@ -89,6 +99,42 @@ fn main() {
             get_devices,
             call_device
         ])
+        .setup(|app| {
+            ONCE.call_once(|| unsafe {
+                MI_CLOUD_PROTOCOL_UNSAFE.write(UnsafeCell::new(MiCloudProtocol::new()));
+            });
+
+            let app_handle = app.handle();
+
+            tauri::async_runtime::spawn({
+                let app_handle = app_handle.clone();
+                async move {
+                    unsafe {
+                        let mut guard = &mut *MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+                        guard._set_captcha_handler(Box::new(move |x| {
+                            let app_handle = app_handle.clone();
+                            let _ = app_handle.emit("captcha_requested", x);
+                        }));
+                    }
+                }
+            });
+
+            app_handle.listen("captcha_solved", move |event| {
+                tauri::async_runtime::spawn(async move {
+                    unsafe {
+                        let guard = &*MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+                        let pl = serde_json::from_str::<String>(event.payload()).unwrap();
+                        if pl.eq("CANCEL") {
+                            guard.captcha_cancel().await
+                        } else {
+                            guard.captcha_solve(pl.as_str()).await
+                        }
+                    }
+                });
+            });
+
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
