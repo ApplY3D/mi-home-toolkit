@@ -1,4 +1,5 @@
 export type Icon =
+  | 'danger'
   | 'email'
   | 'password'
   | 'wifi'

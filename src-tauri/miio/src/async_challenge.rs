@@ -2,32 +2,32 @@ use anyhow::anyhow;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
-pub enum CaptchaSolution {
-    Solved(String),
+pub enum ChallengeSolution<T> {
+    Solved(T),
     Cancel,
 }
 
 #[derive(Clone)]
-pub struct CaptchaState {
-    mutex: Arc<Mutex<Option<CaptchaPending>>>,
+pub struct AsyncChallengeState<T> {
+    mutex: Arc<Mutex<Option<PendingChallenge<T>>>>,
 }
 
-struct CaptchaPending {
-    sender: oneshot::Sender<CaptchaSolution>,
+struct PendingChallenge<T> {
+    sender: oneshot::Sender<ChallengeSolution<T>>,
 }
 
-impl CaptchaState {
+impl<T: Send + 'static> AsyncChallengeState<T> {
     pub fn new() -> Self {
         Self {
             mutex: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub async fn captcha_request_solve<F, Fut>(
+    pub async fn request_solve<F, Fut>(
         &self,
-        captcha_url: String,
+        payload: String,
         when_ready: F,
-    ) -> anyhow::Result<CaptchaSolution>
+    ) -> anyhow::Result<ChallengeSolution<T>>
     where
         F: FnOnce(String) -> Fut,
         Fut: std::future::Future<Output = ()>,
@@ -37,38 +37,36 @@ impl CaptchaState {
 
         {
             let mut lock = self.mutex.lock().unwrap();
-            *lock = Some(CaptchaPending { sender: tx });
+            *lock = Some(PendingChallenge { sender: tx });
         }
 
-        when_ready(captcha_url).await;
+        when_ready(payload).await;
 
         match rx.await {
             Ok(solution) => Ok(solution),
             Err(e) => Err(anyhow!(
-                "Captcha solution channel closed unexpectedly or sender dropped: {}",
+                "Async challenge channel closed unexpectedly or sender dropped: {}",
                 e
             )),
         }
     }
 
-    pub async fn solve(&self, solution: String) {
+    pub async fn solve(&self, solution: T) {
         let mut lock = self.mutex.lock().unwrap();
         if let Some(pending) = lock.take() {
-            let _ = pending
-                .sender
-                .send(CaptchaSolution::Solved(solution.to_string()));
+            let _ = pending.sender.send(ChallengeSolution::Solved(solution));
         }
     }
 
     pub async fn cancel(&self) {
         let mut lock = self.mutex.lock().unwrap();
         if let Some(pending) = lock.take() {
-            let _ = pending.sender.send(CaptchaSolution::Cancel);
+            let _ = pending.sender.send(ChallengeSolution::Cancel);
         }
     }
 }
 
-impl Default for CaptchaState {
+impl<T: Send + 'static> Default for AsyncChallengeState<T> {
     fn default() -> Self {
         Self::new()
     }

@@ -118,7 +118,6 @@ fn main() {
                     }
                 }
             });
-
             app_handle.listen("captcha_solved", move |event| {
                 tauri::async_runtime::spawn(async move {
                     unsafe {
@@ -128,6 +127,32 @@ fn main() {
                             guard.captcha_cancel().await
                         } else {
                             guard.captcha_solve(pl.as_str()).await
+                        }
+                    }
+                });
+            });
+
+            tauri::async_runtime::spawn({
+                let app_handle = app_handle.clone();
+                async move {
+                    unsafe {
+                        let mut guard = &mut *MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+                        guard._set_two_factor_handler(Box::new(move |url, error| {
+                            let app_handle = app_handle.clone();
+                            let _ = app_handle.emit("two_factor_requested", (url, error));
+                        }));
+                    }
+                }
+            });
+            app_handle.listen("two_factor_solved", move |event| {
+                tauri::async_runtime::spawn(async move {
+                    unsafe {
+                        let guard = &*MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
+                        let pl = serde_json::from_str::<String>(event.payload()).unwrap();
+                        if pl.eq("CANCEL") {
+                            guard.two_factor_cancel().await
+                        } else {
+                            guard.two_factor_solve(pl.as_str()).await
                         }
                     }
                 });

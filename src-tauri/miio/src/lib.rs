@@ -15,26 +15,25 @@ use anyhow::{anyhow, Context, Result};
 use crypto_hash::{hex_digest, Algorithm};
 use hmac::NewMac;
 use rand::{thread_rng, Rng};
-use reqwest::{header, Client};
+use reqwest::{cookie::Jar, header, Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Number, Value};
 use sha2::{Digest, Sha256};
 use std::{
     iter,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
     vec,
 };
 use uuid::Uuid;
 
-mod captcha;
-pub use captcha::CaptchaState;
-pub enum ExtendedCaptchaSolution {
+mod async_challenge;
+use crate::async_challenge::{AsyncChallengeState, ChallengeSolution};
+pub enum CaptchaSolution {
     Solved(String),
     Cancel,
     NotNeeded,
 }
-
-use crate::captcha::CaptchaSolution;
 
 fn parse_response_json(str: &str) -> serde_json::Result<Value> {
     let str = if str.starts_with("&&&START&&&") {
@@ -99,7 +98,9 @@ pub struct MiCloudProtocol {
     client_id: String,
     locale: &'static str,
     captcha_handler: Option<Box<dyn Fn(String) + Send + Sync>>,
-    captcha_state: CaptchaState,
+    captcha_state: AsyncChallengeState<String>,
+    two_factor_handler: Option<Box<dyn Fn(String, String) + Send + Sync>>,
+    two_factor_state: AsyncChallengeState<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -190,7 +191,9 @@ impl MiCloudProtocol {
             client_id,
             locale: "en",
             captcha_handler: None,
-            captcha_state: CaptchaState::new(),
+            captcha_state: AsyncChallengeState::<String>::new(),
+            two_factor_handler: None,
+            two_factor_state: AsyncChallengeState::<String>::new(),
         }
     }
 
@@ -229,9 +232,21 @@ impl MiCloudProtocol {
     ///
     /// Returns `Err` if authentication fails.
     pub async fn login(&mut self, username: &str, password: &str) -> Result<()> {
-        let client = Client::new();
+        let jar = Arc::new(Jar::default());
+        let url = "https://account.xiaomi.com".parse::<Url>().unwrap();
+        jar.add_cookie_str(
+            &format!("userId={}; deviceId={}", username, self.client_id),
+            &url,
+        );
+        let client = reqwest::Client::builder()
+            .cookie_provider(Arc::clone(&jar))
+            .build()?;
         let password_md5 = hex_digest(Algorithm::MD5, password.as_bytes()).to_uppercase();
-        let (sign, _) = self.login_step1(&client, username).await?;
+        let step_1_data = self.login_step1(&client, username).await?;
+        let sign = match step_1_data["_sign"].as_str() {
+            Some(s) => Ok(s.to_string()),
+            None => Err(anyhow!("Login step 1 failed: No '_sign' in response")),
+        }?;
         let (ssecurity, user_id, location) = self
             .login_step2(&client, username, password_md5.as_str(), &sign, None)
             .await?;
@@ -332,8 +347,13 @@ impl MiCloudProtocol {
         self.captcha_handler = Some(handler);
     }
 
-    async fn login_step1(&self, client: &Client, username: &str) -> Result<(String, String)> {
+    pub fn _set_two_factor_handler(&mut self, handler: Box<dyn Fn(String, String) + Send + Sync>) {
+        self.two_factor_handler = Some(handler);
+    }
+
+    async fn login_step1(&self, client: &Client, username: &str) -> Result<Value> {
         let mut captcha: Option<String> = None;
+        // recursion in case of captcha
         loop {
             let url = self.urls.login_step1.clone();
             let mut query: Vec<(&'static str, String)> = vec![
@@ -348,12 +368,6 @@ impl MiCloudProtocol {
 
             let res = client
                 .get(url)
-                .header(header::HOST, "account.xiaomi.com")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .header(
-                    header::COOKIE,
-                    format!("userId={}; deviceId={}", username, self.client_id),
-                )
                 .header(header::USER_AGENT, &self.user_agent)
                 .query(&query)
                 .send()
@@ -371,23 +385,16 @@ impl MiCloudProtocol {
 
             let data = parse_response_json(&content)?;
             match self.with_captcha_solving(data.clone()).await {
-                ExtendedCaptchaSolution::Solved(value) => {
+                CaptchaSolution::Solved(value) => {
                     captcha = Some(value);
                     continue;
                 }
-                ExtendedCaptchaSolution::Cancel => {
+                CaptchaSolution::Cancel => {
                     return Err(anyhow!("Captcha cancelled"));
                 }
-                ExtendedCaptchaSolution::NotNeeded => {}
+                CaptchaSolution::NotNeeded => {}
             }
-            let sign = match data["_sign"].as_str() {
-                Some(s) => s.to_string(),
-                None => {
-                    return Err(anyhow!("Login step 1 failed: No '_sign' in response"));
-                }
-            };
-
-            return Ok((sign, content));
+            return Ok(data);
         }
     }
 
@@ -399,6 +406,7 @@ impl MiCloudProtocol {
         sign: &str,
         mut captcha: Option<String>,
     ) -> Result<(String, i64, String)> {
+        // recursion in case of captcha
         loop {
             let form_data = vec![
                 ("hash", password_md5.to_string().clone()),
@@ -419,8 +427,6 @@ impl MiCloudProtocol {
             let req = client
                 .post(url)
                 .form(&form_data)
-                .header(header::HOST, "account.xiaomi.com")
-                .header(header::COOKIE, format!("deviceId={}", self.client_id))
                 .header(header::USER_AGENT, &self.user_agent);
 
             let res = req.send().await?;
@@ -446,14 +452,14 @@ impl MiCloudProtocol {
             // other NeedCaptchaException
 
             match self.with_captcha_solving(data.clone()).await {
-                ExtendedCaptchaSolution::Solved(value) => {
+                CaptchaSolution::Solved(value) => {
                     captcha = Some(value);
                     continue;
                 }
-                ExtendedCaptchaSolution::Cancel => {
+                CaptchaSolution::Cancel => {
                     return Err(anyhow!("Captcha cancelled"));
                 }
-                ExtendedCaptchaSolution::NotNeeded => {}
+                CaptchaSolution::NotNeeded => {}
             }
             if let Some(ssecurity) = data["ssecurity"].as_str() {
                 let user_id = data["userId"]
@@ -465,10 +471,13 @@ impl MiCloudProtocol {
                 return Ok((ssecurity.to_string(), user_id, location.to_string()));
             }
 
-            return Err(anyhow!(
-                "Login step 2 failed: No 'ssecurity' in response. Response: {}",
-                content
-            ));
+            if let Some(notification_url) = data["notificationUrl"].as_str() {
+                return self
+                    .handle_2fa(client, username, notification_url.to_string())
+                    .await;
+            }
+
+            return Err(anyhow!("Login step 2 failed: No 'ssecurity' or 'notificationUrl' in response. Response: {}",content));
         }
     }
 
@@ -493,33 +502,165 @@ impl MiCloudProtocol {
         }
     }
 
-    pub async fn with_captcha_solving(&self, response_json: Value) -> ExtendedCaptchaSolution {
+    async fn with_captcha_solving(&self, response_json: Value) -> CaptchaSolution {
         if let Some(captcha_url) = response_json["captchaUrl"].as_str() {
             if let Some(handler) = &self.captcha_handler {
                 let full_url = format!("https://account.xiaomi.com{captcha_url}");
                 let result = self
                     .captcha_state
-                    .captcha_request_solve(full_url.clone(), |url| async move {
-                        let _ = handler(url);
+                    .request_solve(full_url.clone(), |url| async move {
+                        handler(url);
                     })
                     .await;
 
                 return match result {
-                    Ok(CaptchaSolution::Solved(v)) => ExtendedCaptchaSolution::Solved(v),
-                    _ => ExtendedCaptchaSolution::Cancel,
+                    Ok(ChallengeSolution::Solved(v)) => CaptchaSolution::Solved(v),
+                    _ => CaptchaSolution::Cancel,
                 };
             }
         }
 
-        ExtendedCaptchaSolution::NotNeeded
+        CaptchaSolution::NotNeeded
     }
-
     pub async fn captcha_solve(&self, value: &str) {
         self.captcha_state.solve(value.to_string()).await
     }
 
     pub async fn captcha_cancel(&self) {
         self.captcha_state.cancel().await
+    }
+
+    async fn handle_2fa(
+        &self,
+        client: &Client,
+        username: &str,
+        notification_url: String,
+    ) -> Result<(String, i64, String)> {
+        // recursion in case of wrong 2fa code
+        let mut error: &str = "";
+        let data = loop {
+            let code_from_user = if let Some(handler) = &self.two_factor_handler {
+                match self
+                    .two_factor_state
+                    .request_solve(notification_url.clone(), |url| async move {
+                        handler(url, error.to_string());
+                    })
+                    .await
+                {
+                    Ok(ChallengeSolution::Solved(code)) => code,
+                    _ => return Err(anyhow!("2FA failed: Canceled by the user")),
+                }
+            } else {
+                return Err(anyhow!("2FA is required, but no handler is set. Use _set_two_factor_handler to provide one."));
+            };
+
+            let list_url = notification_url.replace("authStart", "list");
+            let res_list = client.get(&list_url).send().await?;
+            let identity_cookie = res_list
+                .cookies()
+                .find(|c| c.name() == "identity_session")
+                .ok_or_else(|| {
+                    anyhow!("2FA failed: 'identity_session' cookie not found in the response")
+                })?
+                .value()
+                .to_owned();
+
+            let raw_body = res_list.text().await?;
+            let list_data: Value = parse_response_json(&raw_body)?;
+
+            let mut codes_to_try: Vec<i64> = Vec::new();
+            if let Some(code) = list_data["option"].as_i64() {
+                codes_to_try.push(code);
+            }
+            if let Some(options_array) = list_data["options"].as_array() {
+                for option_val in options_array.iter().filter_map(|v| v.as_i64()) {
+                    if !codes_to_try.contains(&option_val) {
+                        codes_to_try.push(option_val);
+                    }
+                }
+            }
+
+            let (flag, verify_api_url) = match codes_to_try.first() {
+                Some(4) => ("4", "https://account.xiaomi.com/identity/auth/verifyPhone"),
+                Some(8) => ("8", "https://account.xiaomi.com/identity/auth/verifyEmail"),
+                _ => {
+                    return Err(anyhow!(
+                        "2FA failed: No supported 2FA methods found for this user. Available options: {:?}",
+                        codes_to_try
+                    ));
+                }
+            };
+
+            let form_data = [
+                ("_flag", flag),
+                ("ticket", &code_from_user),
+                ("trust", "true"),
+                ("_json", "true"),
+            ];
+
+            let dc = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+            let res_verify = client
+                .post(verify_api_url)
+                .query(&[("_dc", &dc.to_string())])
+                .form(&form_data)
+                .header(
+                    header::COOKIE,
+                    format!("identity_session={}", identity_cookie),
+                )
+                .send()
+                .await
+                .context("2FA failed: verification request failed")?;
+
+            let text = res_verify.text().await?;
+            let data: Value = parse_response_json(&text)?;
+            // data['code']:
+            // 0 Success
+            // 70014 2FA code is incorrect
+
+            if data["code"].as_i64() == Some(0) {
+                break data;
+            }
+            if data["code"].as_i64() == Some(70014) {
+                error = "Incorrect code. Please try again.";
+                continue;
+            };
+            return Err(anyhow!("2FA failed: Unexpected API response: {:?}", data));
+        };
+
+        let new_location = data["location"]
+            .as_str()
+            .ok_or_else(|| {
+                anyhow!("2FA failed: 'location' field is missing in the 2FA success response")
+            })?
+            .to_string();
+
+        client
+            .get(&new_location)
+            .send()
+            .await
+            .context("2FA failed: Failed to navigate to the new location URL after 2FA")?;
+
+        let final_data = self.login_step1(client, username).await?;
+
+        let ssecurity = final_data["ssecurity"]
+            .as_str()
+            .ok_or_else(|| anyhow!("2FA: Failed to get 'ssecurity'"))?;
+        let user_id = final_data["userId"]
+            .as_i64()
+            .ok_or_else(|| anyhow!("2FA: Failed to get 'userId'"))?;
+        let location = final_data["location"]
+            .as_str()
+            .ok_or_else(|| anyhow!("2FA: Failed to get final 'location'"))?;
+
+        Ok((ssecurity.to_string(), user_id, location.to_string()))
+    }
+
+    pub async fn two_factor_solve(&self, value: &str) {
+        self.two_factor_state.solve(value.to_string()).await
+    }
+
+    pub async fn two_factor_cancel(&self) {
+        self.two_factor_state.cancel().await
     }
 
     async fn request(
