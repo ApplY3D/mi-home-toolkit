@@ -15,7 +15,11 @@ use anyhow::{anyhow, Context, Result};
 use crypto_hash::{hex_digest, Algorithm};
 use hmac::NewMac;
 use rand::{thread_rng, Rng};
-use reqwest::{cookie::Jar, header, Client, Url};
+use regex::Regex;
+use reqwest::{
+    cookie::{CookieStore, Jar},
+    header, Client, Url,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Number, Value};
 use sha2::{Digest, Sha256};
@@ -33,6 +37,25 @@ pub enum CaptchaSolution {
     Solved(String),
     Cancel,
     NotNeeded,
+}
+
+enum LoginStep2Result {
+    SuccessWithLocation {
+        ssecurity: String,
+        user_id: i64,
+        location: String,
+    },
+    TwoFactorRequired {
+        notification_url: String,
+    },
+}
+
+enum Handle2FaResult {
+    Success {
+        ssecurity: String,
+        user_id: i64,
+        service_token: String,
+    },
 }
 
 fn parse_response_json(str: &str) -> serde_json::Result<Value> {
@@ -247,10 +270,32 @@ impl MiCloudProtocol {
             Some(s) => Ok(s.to_string()),
             None => Err(anyhow!("Login step 1 failed: No '_sign' in response")),
         }?;
-        let (ssecurity, user_id, location) = self
+        let login_step2_res = self
             .login_step2(&client, username, password_md5.as_str(), &sign, None)
             .await?;
-        let service_token = self.login_step3(&client, location).await?;
+        let (ssecurity, user_id, service_token) = match login_step2_res {
+            LoginStep2Result::SuccessWithLocation {
+                ssecurity,
+                user_id,
+                location,
+            } => {
+                let token = self.login_step3(&client, location).await?;
+                (ssecurity, user_id, token)
+            }
+            LoginStep2Result::TwoFactorRequired { notification_url } => {
+                println!("notification_url: {:?}", notification_url);
+                let two_factor_result = self
+                    .handle_2fa(&client, jar.clone(), notification_url)
+                    .await?;
+                match two_factor_result {
+                    Handle2FaResult::Success {
+                        ssecurity,
+                        user_id,
+                        service_token,
+                    } => (ssecurity, user_id, service_token),
+                }
+            }
+        };
 
         self.username = Some(username.to_string());
         self.password_md5 = Some(password_md5);
@@ -405,19 +450,15 @@ impl MiCloudProtocol {
         password_md5: &str,
         sign: &str,
         mut captcha: Option<String>,
-    ) -> Result<(String, i64, String)> {
-        // recursion in case of captcha
+    ) -> Result<LoginStep2Result> {
+        // Loop to handle potential captcha retries.
         loop {
             let form_data = vec![
-                ("hash", password_md5.to_string().clone()),
+                ("hash", password_md5.to_string()),
                 ("_json", "true".to_string()),
-                ("_locale", "en_US".to_string()),
                 ("sid", "xiaomiio".to_string()),
                 ("callback", "https://sts.api.io.mi.com/sts".to_string()),
-                (
-                    "qs",
-                    "%3Fsid%3Dxiaomiio%26_json%3Dtrue%26_locale%3Den_US".to_string(),
-                ),
+                ("qs", "%3Fsid%3Dxiaomiio%26_json%3Dtrue".to_string()),
                 ("_sign", sign.to_string()),
                 ("user", username.to_string()),
                 ("captCode", captcha.unwrap_or("".to_string())),
@@ -451,16 +492,17 @@ impl MiCloudProtocol {
             // 87001 InvalidResponseException captCode error
             // other NeedCaptchaException
 
+            // Check if a captcha is required.
             match self.with_captcha_solving(data.clone()).await {
                 CaptchaSolution::Solved(value) => {
                     captcha = Some(value);
                     continue;
                 }
-                CaptchaSolution::Cancel => {
-                    return Err(anyhow!("Captcha cancelled"));
-                }
+                CaptchaSolution::Cancel => return Err(anyhow!("Captcha cancelled by user")),
                 CaptchaSolution::NotNeeded => {}
             }
+
+            // Check for a successful non-2FA login.
             if let Some(ssecurity) = data["ssecurity"].as_str() {
                 let user_id = data["userId"]
                     .as_i64()
@@ -468,13 +510,18 @@ impl MiCloudProtocol {
                 let location = data["location"]
                     .as_str()
                     .ok_or_else(|| anyhow!("Login step 2 failed: No 'location'"))?;
-                return Ok((ssecurity.to_string(), user_id, location.to_string()));
+                return Ok(LoginStep2Result::SuccessWithLocation {
+                    ssecurity: ssecurity.to_string(),
+                    user_id,
+                    location: location.to_string(),
+                });
             }
 
+            // Check if 2FA is required.
             if let Some(notification_url) = data["notificationUrl"].as_str() {
-                return self
-                    .handle_2fa(client, username, notification_url.to_string())
-                    .await;
+                return Ok(LoginStep2Result::TwoFactorRequired {
+                    notification_url: notification_url.to_string(),
+                });
             }
 
             return Err(anyhow!("Login step 2 failed: No 'ssecurity' or 'notificationUrl' in response. Response: {}",content));
@@ -482,24 +529,14 @@ impl MiCloudProtocol {
     }
 
     async fn login_step3(&self, client: &Client, url: String) -> Result<String> {
-        match client.get(url).send().await {
-            Ok(response) => {
-                let cookies_str = response.headers().values().collect::<Vec<_>>();
-                for cookie_str in cookies_str {
-                    for part in cookie_str.to_str().unwrap().split(';') {
-                        if let Some(path) = part.trim().split_once('=') {
-                            if path.0.trim() == "serviceToken" {
-                                return Ok(path.1.trim().to_string());
-                            }
-                        }
-                    }
-                }
-                Err(anyhow!(
-                    "Login step 3 failed: No 'serviceToken' in response"
-                ))
-            }
-            Err(e) => Err(anyhow!(e).context("Login step 3 failed")),
-        }
+        client
+            .get(url)
+            .send()
+            .await?
+            .cookies()
+            .find(|c| c.name() == "serviceToken")
+            .map(|c| c.value().to_string())
+            .ok_or_else(|| anyhow!("Login Step 3: 'serviceToken' cookie not found in the response"))
     }
 
     async fn with_captcha_solving(&self, response_json: Value) -> CaptchaSolution {
@@ -530,129 +567,299 @@ impl MiCloudProtocol {
         self.captcha_state.cancel().await
     }
 
+    /// Handles the entire complex Two-Factor Authentication (2FA) flow.
+    ///
+    /// This flow is triggered when `login_step2` receives a `notificationUrl`. It involves
+    /// requesting a code via email, verifying it, and then carefully following a redirect
+    /// chain to extract the `ssecurity` and `serviceToken`. A key part of this flow is
+    /// intercepting a redirect to read a custom `extension-pragma` HTTP header.
     async fn handle_2fa(
         &self,
         client: &Client,
-        username: &str,
+        jar: Arc<Jar>,
         notification_url: String,
-    ) -> Result<(String, i64, String)> {
-        // recursion in case of wrong 2fa code
-        let mut error: &str = "";
-        let data = loop {
-            let code_from_user = if let Some(handler) = &self.two_factor_handler {
+    ) -> Result<Handle2FaResult> {
+        // Step 1: Visit notificationUrl to initialize the session and get initial cookies.
+        client
+            .get(&notification_url)
+            .header(header::USER_AGENT, self.user_agent.to_string())
+            .send()
+            .await?;
+
+        // Step 2: Extract the 'context' parameter from the notification URL.
+        let parsed_url = Url::parse(&notification_url)?;
+        let context = parsed_url
+            .query_pairs()
+            .find_map(|(key, value)| (key == "context").then(|| value.into_owned()))
+            .with_context(|| "2FA Flow: Could not find 'context' parameter in notification URL")?;
+
+        // Step 3: Fetch identity options to get the 'identity_session' cookie.
+        let list_res = client
+            .get("https://account.xiaomi.com/identity/list")
+            .query(&[
+                ("sid", "xiaomiio"),
+                ("context", &context),
+                ("supportedMask", "0"),
+            ])
+            .send()
+            .await?
+            .error_for_status()?;
+
+        // {"flag":8,"option":8,"options":[8]}
+        // "options" - available options for login
+        // option 4: '/identity/auth/verifyPhone'
+        // option 8: '/identity/auth/verifyEmail'
+        let list_text = list_res.text().await?;
+        let list_json = parse_response_json(&list_text)?;
+        let options = list_json
+            .get("options")
+            .and_then(|opts| opts.as_array())
+            .map(|opts| opts.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>())
+            .ok_or_else(|| {
+                anyhow!("2FA Flow: Could not find 'options' array in identity/list response")
+            })?;
+
+        if options.is_empty() {
+            return Err(anyhow!(
+                    "2FA Flow: Visit <a href=\"{}\" target=\"_blank\"><strong>link</strong></a> to configure account",
+                    notification_url
+                ));
+        }
+
+        // let the user select the option?
+        let flag = list_json["flag"]
+            .as_i64()
+            .ok_or_else(|| anyhow!("2FA Flow: 'flag' not found in 'identity/list' response"))?;
+
+        // Step 4: Request the 2FA code to be sent to the user's email.
+        let dc1 = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+        let send_ticket_url = if flag == 4 {
+            "https://account.xiaomi.com/identity/auth/sendPhoneTicket"
+        } else {
+            "https://account.xiaomi.com/identity/auth/sendEmailTicket"
+        };
+        let send_ticket_res = client
+            .post(send_ticket_url)
+            .header(header::USER_AGENT, self.user_agent.to_string())
+            .query(&[("_dc", &dc1.to_string())])
+            .form(&[("retry", "0"), ("icode", ""), ("_json", "true")])
+            .send()
+            .await?;
+
+        let send_ticket_text = send_ticket_res.text().await?;
+        let send_ticket_json = parse_response_json(&send_ticket_text)
+            .with_context(|| format!("2FA Flow: Failed to parse {} response", send_ticket_url))?;
+        if send_ticket_json.get("code").and_then(Value::as_i64) != Some(0) {
+            return Err(anyhow!(
+                "2FA Flow: Failed to send 2FA code. Response: {}",
+                send_ticket_text
+            ));
+        }
+
+        // Step 5: Create a separate client WITHOUT automatic redirects.
+        // This is crucial for intercepting headers during intermediate steps.
+        let no_redirect_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .cookie_provider(jar.clone())
+            .build()?;
+
+        // Step 6: Loop to get and verify the code from the user.
+        let mut error_message = "";
+        loop {
+            let code = if let Some(handler) = &self.two_factor_handler {
                 match self
                     .two_factor_state
-                    .request_solve(notification_url.clone(), |url| async move {
-                        handler(url, error.to_string());
+                    .request_solve(flag.to_string(), |flag| async move {
+                        handler(flag, error_message.to_string());
                     })
                     .await
                 {
                     Ok(ChallengeSolution::Solved(code)) => code,
-                    _ => return Err(anyhow!("2FA failed: Canceled by the user")),
+                    _ => return Err(anyhow!("2FA challenge was canceled by the user")),
                 }
             } else {
-                return Err(anyhow!("2FA is required, but no handler is set. Use _set_two_factor_handler to provide one."));
+                return Err(anyhow!("2FA is required, but no 2FA handler is configured"));
             };
 
-            let list_url = notification_url.replace("authStart", "list");
-            let res_list = client.get(&list_url).send().await?;
-            let identity_cookie = res_list
-                .cookies()
-                .find(|c| c.name() == "identity_session")
-                .ok_or_else(|| {
-                    anyhow!("2FA failed: 'identity_session' cookie not found in the response")
-                })?
-                .value()
-                .to_owned();
+            // Step 7: Submit the user-provided code for verification.
+            let dc2 = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+            let verify_url = if flag == 4 {
+                "https://account.xiaomi.com/identity/auth/verifyPhone"
+            } else {
+                "https://account.xiaomi.com/identity/auth/verifyEmail"
+            };
+            let verify_res = client
+                .post(verify_url)
+                .header(header::USER_AGENT, self.user_agent.to_string())
+                .query(&[("_dc", &dc2.to_string())])
+                .form(&[
+                    ("_flag", &flag.to_string()),
+                    ("ticket", &code),
+                    ("trust", &"false".to_string()),
+                    ("_json", &"true".to_string()),
+                ])
+                .send()
+                .await?;
 
-            let raw_body = res_list.text().await?;
-            let list_data: Value = parse_response_json(&raw_body)?;
-
-            let mut codes_to_try: Vec<i64> = Vec::new();
-            if let Some(code) = list_data["option"].as_i64() {
-                codes_to_try.push(code);
+            if !verify_res.status().is_success() {
+                return Err(anyhow!(
+                    "2FA Flow: verify url {} failed with status: {}",
+                    verify_url,
+                    verify_res.status()
+                ));
             }
-            if let Some(options_array) = list_data["options"].as_array() {
-                for option_val in options_array.iter().filter_map(|v| v.as_i64()) {
-                    if !codes_to_try.contains(&option_val) {
-                        codes_to_try.push(option_val);
+
+            let headers = verify_res.headers().clone();
+            let res_text = verify_res.text().await?;
+            let res_json = parse_response_json(&res_text)?;
+
+            if res_json.get("code").and_then(Value::as_i64) == Some(0) {
+                // --- Successful code verification ---
+
+                // Step 8: Reliably extract the URL for the next step ('finish_loc')
+                // by checking JSON body, then headers, then regex on body.
+                let mut finish_loc = res_json
+                    .get("location")
+                    .and_then(Value::as_str)
+                    .map(String::from);
+
+                if finish_loc.is_none() {
+                    finish_loc = headers
+                        .get(header::LOCATION)
+                        .and_then(|v| v.to_str().ok())
+                        .map(String::from);
+                }
+
+                if finish_loc.is_none() {
+                    let re = Regex::new(
+                        r#"https://account\.xiaomi\.com/identity/result/check\?[^"']+"#,
+                    )?;
+                    finish_loc = re.find(&res_text).map(|m| m.as_str().to_string());
+                }
+
+                // Final fallback: directly hit the result/check endpoint.
+                let finish_loc = if let Some(loc) = finish_loc {
+                    loc
+                } else {
+                    let fallback_res = no_redirect_client
+                        .get("https://account.xiaomi.com/identity/result/check")
+                        .query(&[
+                            ("sid", "xiaomiio"),
+                            ("context", &context),
+                            ("_locale", "en_US"),
+                        ])
+                        .send()
+                        .await?;
+
+                    fallback_res
+                    .headers()
+                    .get(header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .map(String::from)
+                    .context("2FA Flow: Could not determine next step URL (finish_loc) from any source")?
+                };
+
+                // Step 9: Handle the intermediate redirect via 'result/check' if necessary.
+                let end_url = if finish_loc.contains("identity/result/check") {
+                    no_redirect_client
+                        .get(&finish_loc)
+                        .send()
+                        .await?
+                        .headers()
+                        .get(header::LOCATION)
+                        .and_then(|v| v.to_str().ok())
+                        .map(String::from)
+                        .context(
+                            "2FA Flow: Missing 'Location' header after 'result/check' redirect",
+                        )?
+                } else {
+                    finish_loc
+                };
+
+                // Step 10: Request the 'end_url' and handle the optional "tips page" redirect.
+                let first_res = no_redirect_client.get(&end_url).send().await?;
+                let first_status = first_res.status();
+                let mut res_headers = first_res.headers().clone();
+                let mut res_text = first_res.text().await?;
+
+                if first_status.is_success() && res_text.contains("Xiaomi Account - Tips") {
+                    let second_res = no_redirect_client.get(&end_url).send().await?;
+                    res_headers = second_res.headers().clone();
+                    res_text = second_res.text().await?;
+                }
+
+                // Step 11: Extract 'ssecurity' from the 'extension-pragma' header.
+                let ssecurity = res_headers
+                    .get("extension-pragma")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    .and_then(|json| json["ssecurity"].as_str().map(String::from))
+                    .context(
+                        "2FA Flow: Could not extract 'ssecurity' from 'extension-pragma' header",
+                    )?;
+
+                // Step 12: Reliably extract the STS URL from headers or response body.
+                let mut sts_url_str = res_headers
+                    .get(header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .map(String::from);
+
+                if sts_url_str.is_none() {
+                    if let Some(idx) = res_text.find("https://sts.api.io.mi.com/sts") {
+                        let end_idx = res_text[idx..].find('"').unwrap_or(300) + idx;
+                        sts_url_str = Some(res_text[idx..end_idx].to_string());
                     }
                 }
+
+                let sts_url = sts_url_str
+                    .context("2FA Flow: Could not find STS redirect URL in headers or body")?;
+
+                // Step 14: Visit the STS URL to get the 'serviceToken' cookie.
+                client.get(&sts_url).send().await?;
+
+                // Step 14: Extract the final 'serviceToken' and 'userId' from the cookie jar.
+                let sts_url_parsed = "https://sts.api.io.mi.com".parse::<Url>()?;
+                let service_token = jar
+                    .cookies(&sts_url_parsed)
+                    .and_then(|c| {
+                        c.to_str()
+                            .ok()
+                            .map(String::from)
+                            .unwrap_or_default()
+                            .split(';')
+                            .find_map(|p| p.trim().strip_prefix("serviceToken=").map(String::from))
+                    })
+                    .context("2FA Flow: Could not find 'serviceToken' cookie")?;
+
+                let user_id_str = jar
+                    .cookies(&"https://account.xiaomi.com/".parse::<Url>()?)
+                    .and_then(|c| {
+                        c.to_str()
+                            .ok()
+                            .map(String::from)
+                            .unwrap_or_default()
+                            .split(';')
+                            .find_map(|p| p.trim().strip_prefix("userId=").map(String::from))
+                    })
+                    .context("2FA Flow: Could not find 'userId' cookie")?;
+
+                let user_id = user_id_str.parse::<i64>()?;
+
+                return Ok(Handle2FaResult::Success {
+                    ssecurity,
+                    user_id,
+                    service_token,
+                });
+            } else if res_json.get("code").and_then(Value::as_i64) == Some(70014) {
+                error_message = "Incorrect code. Please try again.";
+                continue; // Prompt the user again.
+            } else {
+                return Err(anyhow!(
+                    "2FA Flow: Verification failed with an unexpected error. Response: {}",
+                    res_text
+                ));
             }
-
-            let (flag, verify_api_url) = match codes_to_try.first() {
-                Some(4) => ("4", "https://account.xiaomi.com/identity/auth/verifyPhone"),
-                Some(8) => ("8", "https://account.xiaomi.com/identity/auth/verifyEmail"),
-                _ => {
-                    return Err(anyhow!(
-                        "2FA failed: No supported 2FA methods found for this user. Available options: {:?}",
-                        codes_to_try
-                    ));
-                }
-            };
-
-            let form_data = [
-                ("_flag", flag),
-                ("ticket", &code_from_user),
-                ("trust", "true"),
-                ("_json", "true"),
-            ];
-
-            let dc = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
-            let res_verify = client
-                .post(verify_api_url)
-                .query(&[("_dc", &dc.to_string())])
-                .form(&form_data)
-                .header(
-                    header::COOKIE,
-                    format!("identity_session={}", identity_cookie),
-                )
-                .send()
-                .await
-                .context("2FA failed: verification request failed")?;
-
-            let text = res_verify.text().await?;
-            let data: Value = parse_response_json(&text)?;
-            // data['code']:
-            // 0 Success
-            // 70014 2FA code is incorrect
-
-            if data["code"].as_i64() == Some(0) {
-                break data;
-            }
-            if data["code"].as_i64() == Some(70014) {
-                error = "Incorrect code. Please try again.";
-                continue;
-            };
-            return Err(anyhow!("2FA failed: Unexpected API response: {:?}", data));
-        };
-
-        let new_location = data["location"]
-            .as_str()
-            .ok_or_else(|| {
-                anyhow!("2FA failed: 'location' field is missing in the 2FA success response")
-            })?
-            .to_string();
-
-        client
-            .get(&new_location)
-            .send()
-            .await
-            .context("2FA failed: Failed to navigate to the new location URL after 2FA")?;
-
-        let final_data = self.login_step1(client, username).await?;
-
-        let ssecurity = final_data["ssecurity"]
-            .as_str()
-            .ok_or_else(|| anyhow!("2FA: Failed to get 'ssecurity'"))?;
-        let user_id = final_data["userId"]
-            .as_i64()
-            .ok_or_else(|| anyhow!("2FA: Failed to get 'userId'"))?;
-        let location = final_data["location"]
-            .as_str()
-            .ok_or_else(|| anyhow!("2FA: Failed to get final 'location'"))?;
-
-        Ok((ssecurity.to_string(), user_id, location.to_string()))
+        }
     }
 
     pub async fn two_factor_solve(&self, value: &str) {

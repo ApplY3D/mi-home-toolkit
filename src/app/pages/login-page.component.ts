@@ -50,7 +50,7 @@ import { MiService } from '../mi.service'
             <div></div>
             <div>
               <h3 class="font-bold">Login failed</h3>
-              <div class="text-xs">{{ loginMutation.error() }}</div>
+              <div class="text-xs" [innerHTML]="loginMutation.error()"></div>
             </div>
             <button
               type="button"
@@ -99,7 +99,7 @@ import { MiService } from '../mi.service'
       </form>
     </dialog>
 
-    <dialog class="modal" app-dialog [visible]="!!twoFactorUrl()">
+    <dialog class="modal" app-dialog [visible]="!!twoFactorDestination()">
       <form class="modal-box w-auto" (ngSubmit)="submitTwoFactor(twoFactorInput())">
         <button
           type="button"
@@ -111,37 +111,11 @@ import { MiService } from '../mi.service'
 
         <h3 class="font-bold text-lg mb-4">Two factor authentication</h3>
 
-        <p class="mb-4">To continue, please get a verification code from Xiaomi.</p>
+        <p class="mb-4">
+          A verification code has been sent to <b>{{ twoFactorDestination() }}</b
+          >. Please enter it below.
+        </p>
 
-        <div class="w-full mb-4">
-          <label class="label">
-            <span class="label-text font-bold">Step 1: Request your code</span>
-          </label>
-          <p class="text-sm opacity-70 mb-2">
-            Click the link below and follow the instructions to receive your code.
-          </p>
-          @if (twoFactorUrl(); as twoFactorUrlValue) {
-            <a
-              target="_blank"
-              [href]="twoFactorUrlValue"
-              class="link link-primary w-full block overflow-hidden whitespace-nowrap text-ellipsis"
-            >
-              {{ twoFactorUrlValue }}
-            </a>
-          }
-        </div>
-
-        <div role="alert" class="alert alert-warning alert-soft my-4">
-          <app-icon icon="danger" class="flex-shrink-0 size-6" />
-          <span>
-            <b>Important:</b> After receiving the code, <b>return to this page</b> to
-            enter it below. Do not enter it on the Xiaomi website.
-          </span>
-        </div>
-
-        <label class="label">
-          <span class="label-text font-bold">Step 2: Enter the code here</span>
-        </label>
         <div class="flex gap-2 justify-between">
           <div class="w-full">
             <label
@@ -216,7 +190,10 @@ export class LoginPageComponent {
   transparentPx =
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
 
-  twoFactorUrl = signal<string | null>(null)
+  twoFactorOption = signal<string | null>(null)
+  twoFactorDestination = computed(
+    () => ({ 8: 'email', 4: 'phone' })[this.twoFactorOption() || '']
+  )
   twoFactorInput = signal('')
   twoFactorError = signal<string | null>(null)
 
@@ -258,17 +235,17 @@ export class LoginPageComponent {
     this.authService.cancelCaptcha()
   }
 
-  twoFactorHandler([value, error]: [value: string, error?: string]) {
+  twoFactorHandler([value, error]: [payload: string, error?: string]) {
     if (!error) this.twoFactorInput.set('')
     this.twoFactorError.set(error || null)
-    this.twoFactorUrl.set(value)
+    this.twoFactorOption.set(value)
   }
   submitTwoFactor(value: string) {
-    this.twoFactorUrl.set('')
+    this.twoFactorOption.set(null)
     this.authService.solveTwoFactor(value)
   }
   cancelTwoFactor() {
-    this.twoFactorUrl.set('')
+    this.twoFactorOption.set(null)
     this.authService.cancelTwoFactor()
   }
 }

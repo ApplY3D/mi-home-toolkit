@@ -137,9 +137,9 @@ fn main() {
                 async move {
                     unsafe {
                         let mut guard = &mut *MI_CLOUD_PROTOCOL_UNSAFE.assume_init_ref().get();
-                        guard._set_two_factor_handler(Box::new(move |url, error| {
+                        guard._set_two_factor_handler(Box::new(move |payload, error| {
                             let app_handle = app_handle.clone();
-                            let _ = app_handle.emit("two_factor_requested", (url, error));
+                            let _ = app_handle.emit("two_factor_requested", (payload, error));
                         }));
                     }
                 }

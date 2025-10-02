@@ -25,7 +25,7 @@ export class AuthService {
   async login(
     creds: { email: string; password: string; country?: string },
     captchaHandler?: (value: string) => void,
-    twoFactorHandler?: (data: [value: string, error?: string]) => void
+    twoFactorHandler?: (data: [payload: string, error?: string]) => void
   ) {
     const unsubFns = await Promise.all([
       listen<string>('captcha_requested', (e) => captchaHandler?.(e.payload)),
