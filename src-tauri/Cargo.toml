@@ -1,4 +1,4 @@
-workspace = {members = ["miio"] }
+workspace = {members = ["miio", "cli", "devices"] }
 [package]
 authors = ["Dmitrii Kuzmin"]
 description = "A Tauri App"

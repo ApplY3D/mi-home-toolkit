@@ -1,0 +1,14 @@
+[package]
+edition = "2021"
+name = "mi-home-cli"
+version = "0.1.0"
+
+[dependencies]
+anyhow = "1.0.82"
+rpassword = "7.4.0"
+serde_json = "1.0.116"
+tokio = {version = "1.37.0", features = ["full"]}
+
+# We reference the existing library from the parent directory
+mi-home-devices = {path = "../devices"}
+miio = {path = "../miio"}

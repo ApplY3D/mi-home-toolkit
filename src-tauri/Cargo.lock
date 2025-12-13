@@ -2111,6 +2111,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "mi-home-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mi-home-devices",
+ "miio",
+ "rpassword",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "mi-home-devices"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mi-home-toolkit"
 version = "1.4.0"
 dependencies = [
@@ -3322,6 +3343,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "rpassword"
+version = "7.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66d4c8b64f049c6721ec8ccec37ddfc3d641c4a7fca57e8f2a89de509c73df39"
+dependencies = [
+ "libc",
+ "rtoolbox",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rtoolbox"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7cc970b249fbe527d6e02e0a227762c9108b2f49d81094fe357ffc6d14d7f6f"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
