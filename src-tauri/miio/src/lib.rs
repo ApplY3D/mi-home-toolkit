@@ -99,6 +99,7 @@ pub struct UrlsConfig {
     sg: String,
     tw: String,
     us: String,
+    i2: String,
     login_step1: String,
     login_step2: String,
 }
@@ -198,6 +199,7 @@ impl MiCloudProtocol {
                 sg: format!("https://sg.{}", xiaomi_base_url),
                 tw: format!("https://tw.{}", xiaomi_base_url),
                 us: format!("https://us.{}", xiaomi_base_url),
+                i2: format!("https://i2.{}", xiaomi_base_url),
                 login_step1: "https://account.xiaomi.com/pass/serviceLogin".to_string(),
                 login_step2: "https://account.xiaomi.com/pass/serviceLoginAuth2".to_string(),
             },
@@ -1090,6 +1092,7 @@ mod tests {
             sg: "http://localhost:3000".to_string(),
             tw: "http://localhost:3000".to_string(),
             us: "http://localhost:3000".to_string(),
+            i2: "http://localhost:3000".to_string(),
             login_step1: "http://localhost:3000/step1".to_string(),
             login_step2: "http://localhost:3000/step2".to_string(),
         });
