@@ -2112,7 +2112,7 @@ dependencies = [
 
 [[package]]
 name = "mi-home-toolkit"
-version = "1.4.0"
+version = "1.4.1"
 dependencies = [
  "anyhow",
  "lazy_static",
