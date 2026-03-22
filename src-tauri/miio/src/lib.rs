@@ -14,6 +14,7 @@ use ::hmac::{Hmac, Mac};
 use anyhow::{anyhow, Context, Result};
 use crypto_hash::{hex_digest, Algorithm};
 use hmac::NewMac;
+use log::debug;
 use rand::{thread_rng, Rng};
 use regex::Regex;
 use reqwest::{
@@ -33,10 +34,47 @@ use uuid::Uuid;
 
 mod async_challenge;
 use crate::async_challenge::{AsyncChallengeState, ChallengeSolution};
-pub enum CaptchaSolution {
-    Solved(String),
-    Cancel,
-    NotNeeded,
+
+/// Response codes from Xiaomi login API
+///
+/// Note: These are educated guesses based on behavior, not official documentation
+mod login_codes {
+    /// Invalid username format
+    pub const INVALID_USERNAME: i64 = 20003;
+    /// Package name denied / app not authorized
+    pub const PACKAGE_NAME_DENIED: i64 = 22009;
+    /// Generic invalid credentials
+    pub const INVALID_CREDENTIAL: i64 = 70002;
+    /// Invalid credentials with captcha required - also used for password errors
+    pub const INVALID_CREDENTIAL_WITH_CAPTCHA: i64 = 70016;
+    /// Needs verification (similar to captcha)
+    pub const NEED_VERIFICATION: i64 = 81003;
+    /// Invalid captcha code submitted
+    pub const INVALID_CAPTCHA_CODE: i64 = 87001;
+
+    /// Returns a user-friendly error message for a given login API response code.
+    /// Used for codes that terminate login immediately (hard failures) and
+    /// also for retry-eligible codes when max retry attempts have been exhausted.
+    pub fn error_message(code: i64) -> Option<&'static str> {
+        match code {
+            INVALID_CREDENTIAL => {
+                Some("Login failed: Incorrect password. Please verify your credentials.")
+            }
+            INVALID_USERNAME => {
+                Some("Login failed: Invalid username format. Please check your email/phone.")
+            }
+            PACKAGE_NAME_DENIED => {
+                Some("Login failed: Application not authorized. Please update the app.")
+            }
+            NEED_VERIFICATION => Some(
+                "Login failed: Account verification required. Please check your Xiaomi account.",
+            ),
+            INVALID_CAPTCHA_CODE | INVALID_CREDENTIAL_WITH_CAPTCHA => {
+                Some("Login failed: Possibly incorrect password or account issue.")
+            }
+            _ => None,
+        }
+    }
 }
 
 enum LoginStep2Result {
@@ -267,25 +305,38 @@ impl MiCloudProtocol {
             .cookie_provider(Arc::clone(&jar))
             .build()?;
         let password_md5 = hex_digest(Algorithm::MD5, password.as_bytes()).to_uppercase();
-        let step_1_data = self.login_step1(&client, username).await?;
-        let sign = match step_1_data["_sign"].as_str() {
-            Some(s) => Ok(s.to_string()),
-            None => Err(anyhow!("Login step 1 failed: No '_sign' in response")),
-        }?;
+
+        // Step 1: Get _sign
+        let step1_data = self.login_step1(&client).await?;
+        let sign = match step1_data["_sign"].as_str() {
+            Some(s) => s.to_string(),
+            None => return Err(anyhow!("Login step 1 failed: No '_sign' in response")),
+        };
+
+        // Step 2: This handles captcha internally via looping with the _sign from the response
         let login_step2_res = self
-            .login_step2(&client, username, password_md5.as_str(), &sign, None)
+            .login_step2(&client, username, password_md5.as_str(), &sign)
             .await?;
-        let (ssecurity, user_id, service_token) = match login_step2_res {
+
+        match login_step2_res {
             LoginStep2Result::SuccessWithLocation {
                 ssecurity,
                 user_id,
                 location,
             } => {
                 let token = self.login_step3(&client, location).await?;
-                (ssecurity, user_id, token)
+                self.username = Some(username.to_string());
+                self.password_md5 = Some(password_md5);
+                self.ssecurity = Some(ssecurity);
+                self.user_id = Some(user_id.to_string());
+                self.service_token = Some(token);
+                return Ok(());
             }
             LoginStep2Result::TwoFactorRequired { notification_url } => {
-                println!("notification_url: {:?}", notification_url);
+                debug!(
+                    "[miio::login] 2fa_required: notification_url={}",
+                    notification_url
+                );
                 let two_factor_result = self
                     .handle_2fa(&client, jar.clone(), notification_url)
                     .await?;
@@ -294,18 +345,17 @@ impl MiCloudProtocol {
                         ssecurity,
                         user_id,
                         service_token,
-                    } => (ssecurity, user_id, service_token),
+                    } => {
+                        self.username = Some(username.to_string());
+                        self.password_md5 = Some(password_md5);
+                        self.ssecurity = Some(ssecurity);
+                        self.user_id = Some(user_id.to_string());
+                        self.service_token = Some(service_token);
+                        return Ok(());
+                    }
                 }
             }
-        };
-
-        self.username = Some(username.to_string());
-        self.password_md5 = Some(password_md5);
-        self.ssecurity = Some(ssecurity);
-        self.user_id = Some(user_id.to_string());
-        self.service_token = Some(service_token);
-
-        Ok(())
+        }
     }
 
     pub fn is_country_supported(&self, country: &str) -> bool {
@@ -398,113 +448,145 @@ impl MiCloudProtocol {
         self.two_factor_handler = Some(handler);
     }
 
-    async fn login_step1(&self, client: &Client, username: &str) -> Result<Value> {
+    async fn fetch_captcha_b64_data_url(&self, client: &Client, path: &str) -> Result<String> {
+        let resp = client
+            .get(format!("https://account.xiaomi.com{path}"))
+            .header(header::USER_AGENT, &self.user_agent)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(anyhow!("Failed to fetch captcha image: HTTP {}", status));
+        }
+        let mime = resp
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/png")
+            .to_string();
+        let body = resp.bytes().await?;
+        Ok(format!(
+            "data:{mime};base64,{}",
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &body)
+        ))
+    }
+
+    const MAX_STEP1_CAPTCHA_FAILURES: u8 = 3;
+    async fn login_step1(&self, client: &Client) -> Result<Value> {
         let mut captcha: Option<String> = None;
+        let mut captcha_failures = 0u8;
         // recursion in case of captcha
         loop {
-            let url = self.urls.login_step1.clone();
             let mut query: Vec<(&'static str, String)> = vec![
                 ("sid", "xiaomiio".to_string()),
                 ("_json", "true".to_string()),
                 ("_locale", "en_US".to_string()),
             ];
-
-            if let Some(c) = captcha.clone() {
-                query.push(("captCode", c))
+            if let Some(ref c) = captcha {
+                query.push(("captCode", c.clone()));
             }
 
-            let res = client
-                .get(url)
+            let resp = client
+                .get(self.urls.login_step1.clone())
                 .header(header::USER_AGENT, &self.user_agent)
                 .query(&query)
                 .send()
                 .await?;
-
-            let status = res.status();
-            let content = res.text().await?;
-
+            let status = resp.status();
+            let text = resp.text().await?;
             if !status.is_success() {
-                return Err(anyhow!(format!(
-                    "Login step 1 failed: Response status {}",
-                    status
-                ),));
+                return Err(anyhow!("Login step 1 failed: HTTP {}", status));
             }
+            let data = parse_response_json(&text)?;
 
-            let data = parse_response_json(&content)?;
-            match self.with_captcha_solving(data.clone()).await {
-                CaptchaSolution::Solved(value) => {
-                    captcha = Some(value);
-                    continue;
+            if let Some(captcha_url) = data["captchaUrl"].as_str() {
+                if captcha_failures >= Self::MAX_STEP1_CAPTCHA_FAILURES {
+                    return Err(anyhow!(
+                        "Login step 1 failed: Too many captcha attempts ({})",
+                        Self::MAX_STEP1_CAPTCHA_FAILURES
+                    ));
                 }
-                CaptchaSolution::Cancel => {
-                    return Err(anyhow!("Captcha cancelled"));
-                }
-                CaptchaSolution::NotNeeded => {}
+                captcha_failures += 1;
+                captcha = Some(
+                    self.request_captcha_solve(
+                        self.fetch_captcha_b64_data_url(client, captcha_url).await?,
+                    )
+                    .await?,
+                );
+                continue;
             }
             return Ok(data);
         }
     }
 
+    const MAX_CONSECUTIVE_CAPTCHA_SOLVES: u8 = 5;
     async fn login_step2(
         &self,
         client: &Client,
         username: &str,
         password_md5: &str,
         sign: &str,
-        mut captcha: Option<String>,
     ) -> Result<LoginStep2Result> {
-        // Loop to handle potential captcha retries.
+        let mut current_sign = sign.to_string();
+        let mut captcha_code: Option<String> = None;
+        let mut consecutive_captcha_solves: u8 = 0;
+
         loop {
-            let form_data = vec![
+            debug!(
+                "[miio::login] login_step2: sign={}, has_captcha={}",
+                current_sign,
+                captcha_code.is_some()
+            );
+
+            let mut form_data = vec![
                 ("hash", password_md5.to_string()),
                 ("_json", "true".to_string()),
                 ("sid", "xiaomiio".to_string()),
                 ("callback", "https://sts.api.io.mi.com/sts".to_string()),
                 ("qs", "%3Fsid%3Dxiaomiio%26_json%3Dtrue".to_string()),
-                ("_sign", sign.to_string()),
+                ("_sign", current_sign.clone()),
                 ("user", username.to_string()),
-                ("captCode", captcha.unwrap_or("".to_string())),
             ];
+            form_data.extend(captcha_code.as_deref().map(|c| ("captCode", c.to_string())));
 
-            let url = self.urls.login_step2.clone();
-            let req = client
-                .post(url)
+            let resp = client
+                .post(self.urls.login_step2.clone())
                 .form(&form_data)
-                .header(header::USER_AGENT, &self.user_agent);
-
-            let res = req.send().await?;
-
-            let status = res.status();
-            let content = res.text().await.unwrap_or("".to_string());
-
+                .header(header::USER_AGENT, &self.user_agent)
+                .send()
+                .await?;
+            let status = resp.status();
+            let text = resp.text().await?;
             if !status.is_success() {
-                return Err(anyhow!(format!(
-                    "Login step 2 failed: Response status {}",
-                    status
-                ),));
+                return Err(anyhow!("Login step 2 failed: HTTP {}", status));
             }
 
-            let data = parse_response_json(&content)?;
-            // data['code']:
-            // 20003 InvalidUserNameException
-            // 22009 PackageNameDeniedException
-            // 70002 InvalidCredentialException
-            // 70016 InvalidCredentialException with captchaUrl / Password error
-            // 81003 NeedVerificationException
-            // 87001 InvalidResponseException captCode error
-            // other NeedCaptchaException
+            let data = parse_response_json(&text)?;
+            debug!("Login step 2 response: {}", data);
 
-            // Check if a captcha is required.
-            match self.with_captcha_solving(data.clone()).await {
-                CaptchaSolution::Solved(value) => {
-                    captcha = Some(value);
-                    continue;
+            // Captcha required — fetch image via reqwest to capture ick cookie, pass data: URL to frontend
+            if let Some(captcha_url) = data["captchaUrl"].as_str() {
+                if let Some(new_sign) = data["_sign"].as_str() {
+                    current_sign = new_sign.to_string();
                 }
-                CaptchaSolution::Cancel => return Err(anyhow!("Captcha cancelled by user")),
-                CaptchaSolution::NotNeeded => {}
+                consecutive_captcha_solves += 1;
+                if consecutive_captcha_solves >= Self::MAX_CONSECUTIVE_CAPTCHA_SOLVES {
+                    return Err(anyhow!(
+                        "Login failed: Too many captcha challenges. The password may be incorrect or the account may be locked. Please verify your credentials and try again later.",
+                    ));
+                }
+                captcha_code = Some(
+                    self.request_captcha_solve(
+                        self.fetch_captcha_b64_data_url(client, captcha_url).await?,
+                    )
+                    .await?,
+                );
+                continue;
             }
 
-            // Check for a successful non-2FA login.
+            let code = data["code"].as_i64();
+
+            // Success — non-2FA
             if let Some(ssecurity) = data["ssecurity"].as_str() {
                 let user_id = data["userId"]
                     .as_i64()
@@ -519,14 +601,43 @@ impl MiCloudProtocol {
                 });
             }
 
-            // Check if 2FA is required.
+            // 2FA required
             if let Some(notification_url) = data["notificationUrl"].as_str() {
                 return Ok(LoginStep2Result::TwoFactorRequired {
                     notification_url: notification_url.to_string(),
                 });
             }
 
-            return Err(anyhow!("Login step 2 failed: No 'ssecurity' or 'notificationUrl' in response. Response: {}",content));
+            // Auth failure code
+            match code {
+                Some(
+                    login_codes::INVALID_CREDENTIAL_WITH_CAPTCHA
+                    | login_codes::INVALID_CAPTCHA_CODE,
+                ) => {
+                    let step1 = self.login_step1(client).await?;
+                    if let Some(new_sign) = step1["_sign"].as_str() {
+                        current_sign = new_sign.to_string();
+                    }
+                    captcha_code = None;
+                    if let Some(captcha_url) = step1["captchaUrl"].as_str() {
+                        captcha_code = Some(
+                            self.request_captcha_solve(
+                                self.fetch_captcha_b64_data_url(client, captcha_url).await?,
+                            )
+                            .await?,
+                        );
+                    }
+                    continue;
+                }
+                Some(c) => {
+                    if let Some(msg) = login_codes::error_message(c) {
+                        return Err(anyhow!("{msg}"));
+                    }
+                }
+                None => {}
+            }
+
+            return Err(anyhow!("Login step 2 failed: No 'ssecurity', 'notificationUrl', or 'captchaUrl' in response. Response: {}", data));
         }
     }
 
@@ -541,26 +652,36 @@ impl MiCloudProtocol {
             .ok_or_else(|| anyhow!("Login Step 3: 'serviceToken' cookie not found in the response"))
     }
 
-    async fn with_captcha_solving(&self, response_json: Value) -> CaptchaSolution {
-        if let Some(captcha_url) = response_json["captchaUrl"].as_str() {
-            if let Some(handler) = &self.captcha_handler {
-                let full_url = format!("https://account.xiaomi.com{captcha_url}");
-                let result = self
-                    .captcha_state
-                    .request_solve(full_url.clone(), |url| async move {
-                        handler(url);
-                    })
-                    .await;
+    async fn request_captcha_solve(&self, captcha_b64_data_url: String) -> Result<String> {
+        if let Some(handler) = &self.captcha_handler {
+            let result = self
+                .captcha_state
+                .request_solve(captcha_b64_data_url.clone(), |url| async move {
+                    handler(url);
+                })
+                .await;
 
-                return match result {
-                    Ok(ChallengeSolution::Solved(v)) => CaptchaSolution::Solved(v),
-                    _ => CaptchaSolution::Cancel,
-                };
+            match result {
+                Ok(ChallengeSolution::Solved(v)) => {
+                    debug!("request_captcha_solve: user solved captcha");
+                    Ok(v)
+                }
+                Ok(ChallengeSolution::Cancel) => {
+                    debug!("request_captcha_solve: user cancelled captcha");
+                    Err(anyhow!("Captcha cancelled by user"))
+                }
+                Err(e) => {
+                    debug!("request_captcha_solve: error {:?}", e);
+                    Err(anyhow!("Captcha error: {:?}", e))
+                }
             }
+        } else {
+            Err(anyhow!(
+                "Captcha required but no captcha handler is configured"
+            ))
         }
-
-        CaptchaSolution::NotNeeded
     }
+
     pub async fn captcha_solve(&self, value: &str) {
         self.captcha_state.solve(value.to_string()).await
     }

@@ -1,5 +1,14 @@
-import { CommonModule, NgOptimizedImage } from '@angular/common'
-import { Component, computed, effect, inject, signal } from '@angular/core'
+import { CommonModule } from '@angular/common'
+import {
+  Component,
+  computed,
+  effect,
+  ElementRef,
+  inject,
+  signal,
+  untracked,
+  viewChild,
+} from '@angular/core'
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms'
 import { Router } from '@angular/router'
 import { injectMutation } from '@tanstack/angular-query-experimental'
@@ -77,12 +86,13 @@ import { MiService } from '../mi.service'
           ✕
         </button>
         @if (captcha(); as captchaImage) {
-          <img class="mx-auto" width="125" height="45" [ngSrc]="captchaImage" />
+          <img class="mx-auto" width="125" height="45" [src]="captchaImage" />
         } @else {
           <img class="mx-auto" width="125" height="45" [src]="transparentPx" />
         }
         <label class="input flex items-center gap-2">
           <input
+            #captchaInputEl
             [(ngModel)]="captchaInput"
             type="text"
             placeholder="Captcha"
@@ -123,6 +133,7 @@ import { MiService } from '../mi.service'
               [ngClass]="{ 'input-error': !!twoFactorError() }"
             >
               <input
+                #twoFactorInputEl
                 [(ngModel)]="twoFactorInput"
                 (ngModelChange)="twoFactorError.set(null)"
                 type="text"
@@ -163,7 +174,6 @@ import { MiService } from '../mi.service'
     IconComponent,
     FormsModule,
     ReactiveFormsModule,
-    NgOptimizedImage,
     DialogDirective,
   ],
 })
@@ -177,7 +187,7 @@ export class LoginPageComponent {
       this.authService.login(
         credentials,
         this.captchaHandler.bind(this),
-        this.twoFactorHandler.bind(this)
+        this.twoFactorHandler.bind(this),
       ),
     onSuccess: () => this.router.navigateByUrl('devices'),
   }))
@@ -185,15 +195,25 @@ export class LoginPageComponent {
 
   countries = this.miService.countries.value
 
+  captchaInputEl = viewChild<ElementRef<HTMLInputElement>>('captchaInputEl')
   captcha = signal<string | null>(null)
+  captchaChangeEffect = effect(() => {
+    if (!this.captcha()) return
+    untracked(() => setTimeout(() => this.captchaInputEl()?.nativeElement.focus(), 100))
+  })
   captchaInput = signal('')
   transparentPx =
     'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
 
+  twoFactorInputEl = viewChild<ElementRef<HTMLInputElement>>('twoFactorInputEl')
   twoFactorOption = signal<string | null>(null)
   twoFactorDestination = computed(
-    () => ({ 8: 'email', 4: 'phone' })[this.twoFactorOption() || '']
+    () => ({ 8: 'email', 4: 'phone' })[this.twoFactorOption() || ''],
   )
+  twoFactorDestinationChangeEffect = effect(() => {
+    if (!this.twoFactorDestination()) return
+    untracked(() => setTimeout(() => this.twoFactorInputEl()?.nativeElement.focus(), 100))
+  })
   twoFactorInput = signal('')
   twoFactorError = signal<string | null>(null)
 
@@ -204,7 +224,7 @@ export class LoginPageComponent {
   })
 
   disabledFormEffect = effect(() =>
-    this.loading() ? this.form.disable() : this.form.enable()
+    this.loading() ? this.form.disable() : this.form.enable(),
   )
 
   async login(event: SubmitEvent) {

@@ -7,6 +7,7 @@ version = "0.2.0"
 
 [dependencies]
 anyhow = "1.0.82"
+log = "0.4"
 base64 = "0.22.0"
 crypto-hash = "0.3.4"
 hex = "0.4.3"

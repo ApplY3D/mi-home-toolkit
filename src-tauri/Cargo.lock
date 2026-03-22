@@ -2137,6 +2137,7 @@ dependencies = [
  "crypto-hash",
  "hex 0.4.3",
  "hmac",
+ "log",
  "rand 0.8.5",
  "regex",
  "reqwest",
